@@ -44,6 +44,11 @@ _C_MISS = "#9e9e9e"
 _C_FUTURE = "#2a3a55"
 
 
+def _fmt_time(sec: float) -> str:
+    sec = max(0.0, sec)
+    return f"{int(sec) // 60}:{int(sec) % 60:02d}"
+
+
 @dataclass
 class _Note:
     lane: int
@@ -69,7 +74,9 @@ class PracticeWindow(tk.Toplevel):
         self._label_items: dict[int, int] = {}
         self._build_lanes()
         self._notes: list[_Note] = self._build_notes()
-        self._steps: list[dict[int, int]] = self._build_steps()
+        self._steps: list[dict[int, int]] = []
+        self._step_beats: list[float] = []
+        self._build_steps()
 
         # 共通状態
         self._running = False
@@ -87,10 +94,12 @@ class PracticeWindow(tk.Toplevel):
 
         self._mode = tk.StringVar(value="rhythm")
         self._speed = tk.DoubleVar(value=1.0)
+        self._seek_amt = tk.DoubleVar(value=3.0)
         self._audio_on = tk.BooleanVar(value=(audio is not None and audio.is_available()))
         self._score_var = tk.StringVar(value="Score 0")
         self._combo_var = tk.StringVar(value="")
         self._judge_var = tk.StringVar(value="")
+        self._pos_var = tk.StringVar(value="")
         self._instr = tk.StringVar(value="")
 
         self._build_ui()
@@ -131,9 +140,8 @@ class PracticeWindow(tk.Toplevel):
         notes.sort(key=lambda n: n.beat)
         return notes
 
-    def _build_steps(self) -> list[dict[int, int]]:
-        """各ステップ = そのイベントで同時に押すキー（lane -> 代表 midi）。"""
-        steps: list[dict[int, int]] = []
+    def _build_steps(self) -> None:
+        """各ステップ = そのイベントで同時に押すキー（lane -> 代表 midi）と拍位置。"""
         for ev in self.score.events:
             if ev.is_rest:
                 continue
@@ -144,8 +152,8 @@ class PracticeWindow(tk.Toplevel):
                     continue
                 step[self._lane_of_key(key)] = midi
             if step:
-                steps.append(step)
-        return steps
+                self._steps.append(step)
+                self._step_beats.append(ev.start_beat)
 
     def _eff_bpm(self) -> float:
         bpm = self.score.tempo_bpm if self.score.tempo_bpm > 0 else 120.0
@@ -169,6 +177,7 @@ class PracticeWindow(tk.Toplevel):
         ttk.Label(hud, textvariable=self._score_var, font=("", 13, "bold")).pack(side="left")
         ttk.Label(hud, textvariable=self._combo_var, font=("", 12), foreground="#ef6c00").pack(side="left", padx=16)
         ttk.Label(hud, textvariable=self._judge_var, font=("", 13, "bold"), foreground="#1565c0").pack(side="right")
+        ttk.Label(hud, textvariable=self._pos_var, foreground="#888").pack(side="right", padx=12)
 
         self.canvas = tk.Canvas(self, width=_CANVAS_W, height=_CANVAS_H, background="#0f1420",
                                 highlightthickness=0)
@@ -178,6 +187,10 @@ class PracticeWindow(tk.Toplevel):
         controls.pack(fill="x", padx=10, pady=(2, 4))
         self._start_btn = ttk.Button(controls, text="▶ スタート (Space)", command=self._start)
         self._start_btn.pack(side="left")
+        ttk.Button(controls, text="⏪", width=3, command=lambda: self._seek(-self._seek_amt.get())).pack(side="left", padx=(10, 1))
+        ttk.OptionMenu(controls, self._seek_amt, 3.0, 1.0, 3.0, 5.0, 10.0).pack(side="left")
+        ttk.Label(controls, text="秒").pack(side="left")
+        ttk.Button(controls, text="⏩", width=3, command=lambda: self._seek(self._seek_amt.get())).pack(side="left", padx=1)
         ttk.Label(controls, text="速度:").pack(side="left", padx=(12, 2))
         ttk.OptionMenu(controls, self._speed, 1.0, 0.5, 0.75, 1.0, 1.25).pack(side="left")
         ttk.Checkbutton(controls, text="音を鳴らす", variable=self._audio_on).pack(side="left", padx=10)
@@ -186,9 +199,9 @@ class PracticeWindow(tk.Toplevel):
 
     def _apply_mode_text(self) -> None:
         if self._mode.get() == "step":
-            self._instr.set("次に光ったキーを押すと譜面が進みます（テンポ・リズムは自由）。和音は全部押すと進む。")
+            self._instr.set("次に光ったキーを押すと譜面が進みます（テンポ・リズムは自由）。和音は全部押すと進む。 ← / → で送り・戻し")
         else:
-            self._instr.set("このウィンドウを選んで、ノーツが判定ラインに来た瞬間にキーを叩く。")
+            self._instr.set("ノーツが判定ラインに来た瞬間にキーを叩く。 ← / → で秒数の送り・戻し")
 
     def _lane_w(self) -> float:
         n = max(1, len(self._lanes))
@@ -239,6 +252,7 @@ class PracticeWindow(tk.Toplevel):
             self._score_var.set("Score 0")
             self._combo_var.set("")
             self._judge_var.set("")
+        self._pos_var.set("")
 
     def _stop_loop(self) -> None:
         if self._after is not None:
@@ -259,10 +273,58 @@ class PracticeWindow(tk.Toplevel):
         if event.keysym == "space" and not self._running:
             self._start()
             return
+        if event.keysym in ("Left", "Right"):
+            amt = self._seek_amt.get()
+            self._seek(-amt if event.keysym == "Left" else amt)
+            return
         if self._mode.get() == "step":
             self._on_key_step(event)
         else:
             self._on_key_rhythm(event)
+
+    # --- シーク（両モード共通） ----------------------------------------------
+    def _seek(self, delta_sec: float) -> None:
+        if not self._running:
+            return
+        if self._mode.get() == "step":
+            self._seek_step(delta_sec)
+        else:
+            self._seek_rhythm(delta_sec)
+
+    def _seek_rhythm(self, delta_sec: float) -> None:
+        if not self._notes:
+            return
+        spb = self._spb()
+        total = (self._notes[-1].beat + self._notes[-1].dur_beat) * spb
+        now = time.perf_counter() - self._t0
+        new_now = max(0.0, min(now + delta_sec, total))
+        self._t0 = time.perf_counter() - new_now
+        # 新しい位置より前は「済み扱い」、以降は再挑戦できるようリセット
+        for n in self._notes:
+            t = n.beat * spb
+            if t < new_now - _MISS_LATE:
+                n.judged = True
+            else:
+                n.judged = False
+                n.hit = False
+                n.missed = False
+        # 音声も新しい位置から鳴らし直す
+        if self._audio_on.get() and self.audio is not None and self.audio.is_available():
+            self.audio.play_score(self.score, self._eff_bpm(), start_sec=new_now)
+        self._pos_var.set(f"{_fmt_time(new_now)} / {_fmt_time(total)}")
+
+    def _seek_step(self, delta_sec: float) -> None:
+        if not self._steps:
+            return
+        bpm = self.score.tempo_bpm if self.score.tempo_bpm > 0 else 120.0
+        delta_beats = delta_sec * bpm / 60.0
+        cur = min(self._cur, len(self._steps) - 1)
+        target = self._step_beats[cur] + delta_beats
+        idx = min(range(len(self._steps)), key=lambda i: abs(self._step_beats[i] - target))
+        self._cur = idx
+        self._pressed = set()
+        self._progress = float(idx)
+        self._render_step()
 
     # =====================================================================
     # リズムモード
@@ -327,6 +389,7 @@ class PracticeWindow(tk.Toplevel):
                 self._apply_judgment("Miss", 0)
         self._render(now, spb)
         last_hit = (self._notes[-1].beat + self._notes[-1].dur_beat) * spb if self._notes else 0
+        self._pos_var.set(f"{_fmt_time(min(now, last_hit))} / {_fmt_time(last_hit)}")
         if now > last_hit + 1.5:
             self._finish()
             return

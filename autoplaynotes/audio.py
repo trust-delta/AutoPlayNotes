@@ -89,24 +89,31 @@ def _wav_bytes(pcm: bytes, sample_rate: int = _SR) -> bytes:
     return buf.getvalue()
 
 
-def render_score_pcm(score: Score, bpm: float) -> bytes:
-    """曲全体を 16bit mono PCM にレンダリングする。"""
+def render_score_pcm(score: Score, bpm: float, start_sec: float = 0.0) -> bytes:
+    """曲を 16bit mono PCM にレンダリングする。start_sec 秒目以降だけを出力する。"""
     if bpm <= 0:
         bpm = 120.0
     seconds_per_beat = 60.0 / bpm
+    start_sec = max(0.0, start_sec)
     total_sec = min(score.total_seconds(bpm) + 0.6, _MAX_AUDITION_SEC)
-    total_n = max(1, int(total_sec * _SR))
+    render_sec = max(0.05, total_sec - start_sec)
+    total_n = max(1, int(render_sec * _SR))
     main = array.array("h", bytes(2 * total_n))
 
     for event in score.events:
         if event.is_rest:
             continue
         dur = min(event.duration_beat * seconds_per_beat, 2.0)
+        t = event.start_beat * seconds_per_beat - start_sec
+        if t + dur < 0:
+            continue  # シーク位置より前に鳴り終わる音
         freqs = [midi_to_freq(m) for m in event.midi_notes]
         chord = _chord(freqs, dur)
-        start = int(event.start_beat * seconds_per_beat * _SR)
+        start = int(t * _SR)
         for i in range(len(chord)):
             j = start + i
+            if j < 0:
+                continue
             if j >= total_n:
                 break
             main[j] = _clamp16(main[j] + chord[i])
@@ -138,12 +145,12 @@ class AudioPlayer:
         freqs = [midi_to_freq(m) for m in midi_notes]
         self._play_pcm(_chord(freqs, dur).tobytes())
 
-    def play_score(self, score: Score, bpm: float) -> float:
-        """曲全体を鳴らす。戻り値は再生秒数（カーソル同期用）。"""
+    def play_score(self, score: Score, bpm: float, start_sec: float = 0.0) -> float:
+        """曲を鳴らす（start_sec 秒目から）。戻り値は残り再生秒数。"""
         if not self._ok or not score.events:
             return 0.0
-        self._play_pcm(render_score_pcm(score, bpm))
-        return min(score.total_seconds(bpm), _MAX_AUDITION_SEC)
+        self._play_pcm(render_score_pcm(score, bpm, start_sec=start_sec))
+        return max(0.0, min(score.total_seconds(bpm), _MAX_AUDITION_SEC) - max(0.0, start_sec))
 
     def stop(self) -> None:
         if not self._ok:
