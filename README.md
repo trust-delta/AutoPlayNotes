@@ -52,6 +52,20 @@ MIDI 読み込みを使う場合のみ、追加で:
 pip install mido
 ```
 
+### Python なしで使う（exe をビルド）
+
+Python を入れずにダブルクリックで起動できる**単一 exe** を作れます（PyInstaller・`mido` 同梱）。
+
+```
+python -m pip install -r requirements-dev.txt
+python build.py
+```
+
+`dist/AutoPlayNotes.exe`（約 14MB）が生成されます。Python のインストールは不要で、配布もこの 1 ファイルだけで済みます。
+
+> 初回起動は展開のため数秒かかります。未署名のため Windows SmartScreen の警告が出た場合は
+> 「詳細情報」→「実行」を選んでください。
+
 ---
 
 ## 使い方（基本の流れ）
