@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import tkinter as tk
+from dataclasses import replace
 from tkinter import filedialog, messagebox, ttk
 
 from . import midi_parser
@@ -14,9 +15,13 @@ from .keymap import KeyMapping
 from .model import Score
 from .number_parser import parse_numbers
 from .player import PlaybackOptions, Player, preview_lines
+from .playlist import Playlist, PlaylistItem
 from .staff import StaffWindow
 from .text_parser import parse_text
 from .win_input import KeySender
+
+# プレイリストで曲間に挟む待ち時間（秒）
+_BETWEEN_SONGS_GAP = 1.5
 
 SAMPLE_NOTATION = """# title: きらきら星
 # tempo: 120
@@ -45,6 +50,16 @@ class App:
         self.audio = AudioPlayer()
         self._staff_window: StaffWindow | None = None
 
+        # プレイリスト状態
+        self.playlist = Playlist()
+        for item_dict in self.config.playlist:
+            try:
+                self.playlist.add(PlaylistItem.from_dict(item_dict))
+            except Exception:
+                pass
+        self._playlist_active = False
+        self._miniplayer: "MiniPlayerWindow | None" = None
+
         self._source = tk.StringVar(value="text")
         self._midi_path = tk.StringVar(value="")
         self._midi_info: object | None = None  # midi_parser.MidiInfo
@@ -53,10 +68,11 @@ class App:
         self._midi_octave = 0
         self._mapping_var = tk.StringVar(value=self.config.active_mapping)
         self._status_var = tk.StringVar(value="待機中")
+        self._loop_var = tk.BooleanVar(value=self.config.loop)
 
         root.title("AutoPlayNotes - 楽譜オートプレイヤー")
-        root.geometry("820x680")
-        root.minsize(720, 560)
+        root.geometry("860x820")
+        root.minsize(760, 680)
 
         self._build_ui()
         self._setup_hotkeys()
@@ -161,6 +177,34 @@ class App:
             side="left", padx=16
         )
 
+        # プレイリスト
+        pl = ttk.LabelFrame(self.root, text="プレイリスト（連続再生）")
+        pl.pack(fill="x", **pad)
+        list_row = ttk.Frame(pl)
+        list_row.pack(fill="x", padx=4, pady=2)
+        self._pl_list = tk.Listbox(list_row, height=4, activestyle="dotbox")
+        pl_scroll = ttk.Scrollbar(list_row, command=self._pl_list.yview)
+        self._pl_list.configure(yscrollcommand=pl_scroll.set)
+        pl_scroll.pack(side="right", fill="y")
+        self._pl_list.pack(side="left", fill="both", expand=True)
+        self._pl_list.bind("<Double-Button-1>", lambda e: self._pl_play_selected())
+
+        pl_btns = ttk.Frame(pl)
+        pl_btns.pack(fill="x", padx=4, pady=2)
+        ttk.Button(pl_btns, text="＋現在の楽譜", command=self._pl_add_current).pack(side="left", padx=1)
+        ttk.Button(pl_btns, text="＋ファイル", command=self._pl_add_files).pack(side="left", padx=1)
+        ttk.Button(pl_btns, text="削除", command=self._pl_remove).pack(side="left", padx=1)
+        ttk.Button(pl_btns, text="↑", width=3, command=lambda: self._pl_move(-1)).pack(side="left", padx=1)
+        ttk.Button(pl_btns, text="↓", width=3, command=lambda: self._pl_move(1)).pack(side="left", padx=1)
+        ttk.Button(pl_btns, text="クリア", command=self._pl_clear).pack(side="left", padx=1)
+        ttk.Separator(pl_btns, orient="vertical").pack(side="left", fill="y", padx=6)
+        ttk.Button(pl_btns, text="⏮", width=3, command=lambda: self._goto_relative(-1)).pack(side="left", padx=1)
+        ttk.Button(pl_btns, text="▶ 再生", command=self._pl_play_selected).pack(side="left", padx=1)
+        ttk.Button(pl_btns, text="⏭", width=3, command=lambda: self._goto_relative(1)).pack(side="left", padx=1)
+        ttk.Checkbutton(pl_btns, text="ループ", variable=self._loop_var).pack(side="left", padx=6)
+        ttk.Button(pl_btns, text="ミニプレイヤー", command=self._open_miniplayer).pack(side="right", padx=2)
+        self._refresh_playlist_listbox()
+
         log_frame = ttk.LabelFrame(self.root, text="ログ")
         log_frame.pack(fill="both", expand=True, **pad)
         self._log_text = tk.Text(log_frame, height=8, wrap="word", state="disabled",
@@ -261,30 +305,236 @@ class App:
         self._play_score(score)
 
     def _play_score(self, score: Score, start_beat: float = 0.0) -> None:
+        """単曲を再生（エディタ/五線譜から）。プレイリスト再生ではない。"""
         if self.player.is_playing:
             return
         if not score.events:
             messagebox.showwarning("空の楽譜", "演奏できる音がありません。")
             return
-        mapping = self._current_mapping()
-        try:
-            keys = {k for k in mapping.note_to_key.values()}
-            self.sender.validate(keys)
-        except Exception as exc:
-            messagebox.showerror("キー設定エラー", f"割り当てキーに問題があります: {exc}")
-            return
-
-        self._save_config_from_ui()
+        self._playlist_active = False
         title = score.title or "(無題)"
         where = f" / {start_beat:.2f}拍から" if start_beat > 0 else ""
         self._log(f"演奏準備: {title} / {len(score.events)} 音 / {score.tempo_bpm:.0f} BPM{where}")
+        self._begin(score, self._options(start_beat))
+
+    def _begin(self, score: Score, options: PlaybackOptions) -> bool:
+        """検証してプレイヤーを起動する共通処理。成功なら True。"""
+        mapping = self._current_mapping()
+        try:
+            self.sender.validate(set(mapping.note_to_key.values()))
+        except Exception as exc:
+            messagebox.showerror("キー設定エラー", f"割り当てキーに問題があります: {exc}")
+            return False
+        self._save_config_from_ui()
         self._start_btn.configure(state="disabled")
         self._stop_btn.configure(state="normal")
         try:
-            self.player.play(score, mapping, self._options(start_beat))
+            self.player.play(score, mapping, options)
         except Exception as exc:
             self._log(f"開始に失敗: {exc}")
             self._reset_buttons()
+            return False
+        self._notify_mini()
+        return True
+
+    # --- プレイリスト ---------------------------------------------------------
+    def _refresh_playlist_listbox(self) -> None:
+        self._pl_list.delete(0, "end")
+        for i, item in enumerate(self.playlist.items):
+            marker = "▶ " if (i == self.playlist.index and self._playlist_active) else "   "
+            kind = {"text": "CDE", "number": "数字", "midi": "MIDI"}.get(item.kind, item.kind)
+            self._pl_list.insert("end", f"{marker}{i + 1}. {item.name}  [{kind}]")
+        if self.playlist.items:
+            self._pl_list.selection_clear(0, "end")
+            self._pl_list.selection_set(self.playlist.index)
+
+    def _selected_index(self) -> int:
+        sel = self._pl_list.curselection()
+        return sel[0] if sel else self.playlist.index
+
+    def _pl_add_current(self) -> None:
+        source = self._source.get()
+        if source == "midi":
+            path = self._midi_path.get().strip()
+            if not path:
+                messagebox.showwarning("MIDI 未選択", "先に MIDI を選択してください。")
+                return
+            name = os.path.splitext(os.path.basename(path))[0]
+            item = PlaylistItem(
+                name=name, kind="midi", midi_path=path,
+                midi_selection=list(self._midi_selection) if self._midi_selection else None,
+                midi_mono=self._midi_mono, midi_octave=self._midi_octave,
+            )
+        else:
+            text = self._notation.get("1.0", "end")
+            tempo = self._read_float(self._tempo, 120.0)
+            octave = int(self._read_float(self._octave, 4))
+            item = PlaylistItem(
+                name="(名称未設定)", kind=("number" if source == "number" else "text"),
+                text=text, tempo=tempo, octave=octave,
+            )
+            item.name = self._guess_name(item)
+        self.playlist.add(item)
+        self._persist_playlist()
+        self._refresh_playlist_listbox()
+        self._log(f"プレイリストに追加: {item.name}")
+
+    def _guess_name(self, item: PlaylistItem) -> str:
+        try:
+            title = item.build_score().title
+        except Exception:
+            title = ""
+        return title or f"曲{len(self.playlist.items) + 1}"
+
+    def _pl_add_files(self) -> None:
+        paths = filedialog.askopenfilenames(
+            title="プレイリストに追加",
+            filetypes=[("楽譜/MIDI", "*.txt *.mid *.midi"), ("テキスト", "*.txt"),
+                       ("MIDI", "*.mid *.midi"), ("すべて", "*.*")],
+        )
+        for path in paths:
+            ext = os.path.splitext(path)[1].lower()
+            name = os.path.splitext(os.path.basename(path))[0]
+            if ext in (".mid", ".midi"):
+                if not midi_parser.is_available():
+                    messagebox.showinfo("mido が必要です", "MIDI には 'pip install mido' が必要です。")
+                    continue
+                self.playlist.add(PlaylistItem(name=name, kind="midi", midi_path=path))
+            else:
+                try:
+                    with open(path, "r", encoding="utf-8") as f:
+                        content = f.read()
+                except Exception as exc:
+                    self._log(f"読み込み失敗: {os.path.basename(path)} ({exc})")
+                    continue
+                self.playlist.add(PlaylistItem(name=name, kind="text", text=content))
+        self._persist_playlist()
+        self._refresh_playlist_listbox()
+
+    def _pl_remove(self) -> None:
+        i = self._selected_index()
+        if self.playlist.items:
+            self.playlist.remove(i)
+            self._persist_playlist()
+            self._refresh_playlist_listbox()
+
+    def _pl_move(self, delta: int) -> None:
+        i = self._selected_index()
+        j = self.playlist.move(i, delta)
+        if j != i:
+            self._persist_playlist()
+            self._refresh_playlist_listbox()
+            self._pl_list.selection_clear(0, "end")
+            self._pl_list.selection_set(j)
+
+    def _pl_clear(self) -> None:
+        self.playlist.clear()
+        self._persist_playlist()
+        self._refresh_playlist_listbox()
+
+    def _pl_play_selected(self) -> None:
+        if not self.playlist.items:
+            messagebox.showinfo("プレイリスト空", "先に曲を追加してください。")
+            return
+        if self.player.is_playing:
+            return
+        self.playlist.set_index(self._selected_index())
+        self._playlist_active = True
+        self._play_current_item(first=True)
+
+    def _play_current_item(self, first: bool) -> None:
+        item = self.playlist.current()
+        if item is None:
+            self._end_playlist()
+            return
+        try:
+            score = item.build_score()
+        except Exception as exc:
+            self._log(f"スキップ（{item.name}）: {exc}")
+            self._after_song()
+            return
+        if not score.events:
+            self._log(f"空のためスキップ: {item.name}")
+            self._after_song()
+            return
+        count_in = max(0.0, self._read_float(self._countin, 3.0)) if first else _BETWEEN_SONGS_GAP
+        options = replace(self._options(), tempo_bpm=None, count_in_seconds=count_in)
+        total = len(self.playlist.items)
+        self._log(f"▶ [{self.playlist.index + 1}/{total}] {item.name}（{len(score.events)} 音）")
+        self._refresh_playlist_listbox()
+        if not self._begin(score, options):
+            self._end_playlist()
+
+    def _after_song(self) -> None:
+        """1 曲終了後、次へ進む / ループ / 終了。"""
+        if self.playlist.has_next():
+            self.playlist.advance()
+            self._play_current_item(first=False)
+        elif self._loop_var.get() and self.playlist.items:
+            self.playlist.set_index(0)
+            self._play_current_item(first=False)
+        else:
+            self._end_playlist()
+
+    def _end_playlist(self) -> None:
+        self._playlist_active = False
+        self._log("プレイリスト再生を終了しました。")
+        self._refresh_playlist_listbox()
+        self._notify_mini()
+
+    def _goto_relative(self, delta: int) -> None:
+        """再生中/停止中を問わず、前後の曲へ移動して再生する。"""
+        if not self.playlist.items:
+            return
+        target = self.playlist.index + delta
+        if target < 0:
+            target = len(self.playlist.items) - 1 if self._loop_var.get() else 0
+        elif target >= len(self.playlist.items):
+            target = 0 if self._loop_var.get() else len(self.playlist.items) - 1
+        self.player.stop()
+        self.player.wait(0.7)
+        self.audio.stop()
+        self.playlist.set_index(target)
+        self._playlist_active = True
+        self._play_current_item(first=False)
+
+    def _open_miniplayer(self) -> None:
+        if self._miniplayer is not None and self._miniplayer.winfo_exists():
+            self._miniplayer.lift()
+            return
+        self._miniplayer = MiniPlayerWindow(
+            self.root,
+            on_prev=lambda: self._goto_relative(-1),
+            on_next=lambda: self._goto_relative(1),
+            on_toggle=self._mini_toggle,
+            on_stop=self._on_stop,
+            loop_var=self._loop_var,
+        )
+        self._notify_mini()
+
+    def _mini_toggle(self) -> None:
+        if self.player.is_playing:
+            self._on_stop()
+        elif self.playlist.items:
+            self._pl_play_selected()
+        else:
+            self._on_start()
+
+    def _notify_mini(self) -> None:
+        if self._miniplayer is None or not self._miniplayer.winfo_exists():
+            return
+        item = self.playlist.current()
+        name = item.name if item else "(なし)"
+        pos = f"{self.playlist.index + 1}/{len(self.playlist.items)}" if self.playlist.items else "-"
+        self._miniplayer.update_state(name, pos, self.player.is_playing, self._status_var.get())
+
+    def _persist_playlist(self) -> None:
+        self.config.playlist = [it.to_dict() for it in self.playlist.items]
+        self.config.loop = self._loop_var.get()
+        try:
+            self.config.save()
+        except Exception:
+            pass
 
     def _open_staff(self) -> None:
         score = self._build_score()
@@ -510,6 +760,8 @@ class App:
         self.config.timing_jitter_ms = self._read_float(self._jitter, 0.0)
         self.config.gate_jitter_pct = self._read_float(self._gatejit, 0.0)
         self.config.chord_roll_ms = self._read_float(self._roll, 0.0)
+        self.config.loop = self._loop_var.get()
+        self.config.playlist = [it.to_dict() for it in self.playlist.items]
         try:
             self.config.save()
         except Exception:
@@ -524,7 +776,21 @@ class App:
         self.root.after(0, lambda: self._set_status(message))
 
     def _done_threadsafe(self, stopped: bool) -> None:
-        self.root.after(0, self._reset_buttons)
+        self.root.after(0, lambda: self._on_done(stopped))
+
+    def _on_done(self, stopped: bool) -> None:
+        # 手動 next/prev で既に次曲が始まっている場合は二重進行させない
+        if self.player.is_playing:
+            self._notify_mini()
+            return
+        self._reset_buttons()
+        self._notify_mini()
+        if stopped:
+            self._playlist_active = False
+            self._refresh_playlist_listbox()
+            return
+        if self._playlist_active:
+            self._after_song()
 
     def _progress_threadsafe(self, beat: float, total_beats: float) -> None:
         self.root.after(0, lambda: self._update_cursor(beat))
@@ -536,6 +802,7 @@ class App:
     def _set_status(self, message: str) -> None:
         self._status_var.set(message)
         self._log(message)
+        self._notify_mini()
 
     def _log(self, message: str) -> None:
         self._log_text.configure(state="normal")
@@ -544,6 +811,7 @@ class App:
         self._log_text.configure(state="disabled")
 
     def _on_close(self) -> None:
+        self._playlist_active = False
         try:
             self.audio.stop()
         except Exception:
@@ -553,6 +821,11 @@ class App:
             self.player.wait(1.0)
         except Exception:
             pass
+        if self._miniplayer is not None:
+            try:
+                self._miniplayer.destroy()
+            except Exception:
+                pass
         try:
             self.sender.release_all()
         except Exception:
@@ -705,6 +978,56 @@ class MidiTrackDialog(tk.Toplevel):
         octave = max(-3, min(3, octave))
         self._on_ok(selected, self._mono.get(), octave)
         self.destroy()
+
+
+class MiniPlayerWindow(tk.Toplevel):
+    """常に手前に表示される小さな操作パネル（プレイリスト操作用）。"""
+
+    def __init__(self, parent: tk.Tk, on_prev, on_next, on_toggle, on_stop, loop_var: tk.BooleanVar) -> None:
+        super().__init__(parent)
+        self.title("ミニプレイヤー")
+        self.geometry("360x140")
+        self.resizable(False, False)
+        self._on_toggle = on_toggle
+
+        self._topmost = tk.BooleanVar(value=True)
+        self.attributes("-topmost", True)
+
+        self._name_var = tk.StringVar(value="(なし)")
+        self._pos_var = tk.StringVar(value="-")
+        self._status_var = tk.StringVar(value="待機中")
+
+        ttk.Label(self, textvariable=self._name_var, font=("", 11, "bold")).pack(
+            anchor="w", padx=10, pady=(8, 0)
+        )
+        info = ttk.Frame(self)
+        info.pack(fill="x", padx=10)
+        ttk.Label(info, textvariable=self._pos_var, foreground="#555").pack(side="left")
+        ttk.Label(info, textvariable=self._status_var, foreground="#1565c0").pack(side="right")
+
+        controls = ttk.Frame(self)
+        controls.pack(pady=6)
+        ttk.Button(controls, text="⏮", width=4, command=on_prev).pack(side="left", padx=3)
+        self._toggle_btn = ttk.Button(controls, text="▶", width=6, command=on_toggle)
+        self._toggle_btn.pack(side="left", padx=3)
+        ttk.Button(controls, text="■", width=4, command=on_stop).pack(side="left", padx=3)
+        ttk.Button(controls, text="⏭", width=4, command=on_next).pack(side="left", padx=3)
+
+        bottom = ttk.Frame(self)
+        bottom.pack(fill="x", padx=10)
+        ttk.Checkbutton(bottom, text="ループ", variable=loop_var).pack(side="left")
+        ttk.Checkbutton(
+            bottom, text="常に手前", variable=self._topmost, command=self._toggle_topmost
+        ).pack(side="right")
+
+    def _toggle_topmost(self) -> None:
+        self.attributes("-topmost", self._topmost.get())
+
+    def update_state(self, name: str, pos: str, playing: bool, status: str) -> None:
+        self._name_var.set(name)
+        self._pos_var.set(pos)
+        self._status_var.set(status)
+        self._toggle_btn.configure(text="■ 停止" if playing else "▶ 再生")
 
 
 def run() -> None:

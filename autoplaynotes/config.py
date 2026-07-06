@@ -37,8 +37,11 @@ class AppConfig:
     chord_roll_ms: float = 0.0
     hotkey_start: str = "F9"
     hotkey_stop: str = "F10"
+    loop: bool = False
     # ユーザー定義マッピング（プリセットを上書き / 追加）
     custom_mappings: dict[str, dict[str, Any]] = field(default_factory=dict)
+    # プレイリスト（PlaylistItem.to_dict のリスト）
+    playlist: list[dict[str, Any]] = field(default_factory=list)
 
     def mapping(self) -> KeyMapping:
         """現在有効なマッピングを返す。"""
