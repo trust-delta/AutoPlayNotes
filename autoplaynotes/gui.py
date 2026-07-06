@@ -1072,6 +1072,7 @@ class ExportDialog(tk.Toplevel):
 
         self._format = tk.StringVar(value="text")
         self._tonic = tk.StringVar(value="C")
+        self._keys_rhythm = tk.BooleanVar(value=True)
 
         opt = ttk.Frame(self)
         opt.pack(fill="x", padx=10, pady=(10, 4))
@@ -1085,7 +1086,8 @@ class ExportDialog(tk.Toplevel):
         ttk.Label(key_row, text="数字譜の主音:").pack(side="left")
         ttk.OptionMenu(key_row, self._tonic, "C", "C", "G", "D", "A", "E", "F", "Bb", "Eb",
                        command=lambda _v: self._regen()).pack(side="left", padx=4)
-        ttk.Label(key_row, text="（数字譜のときのみ）", foreground="#666").pack(side="left")
+        ttk.Checkbutton(key_row, text="休符・拍を含める（キー譜の再現用）",
+                        variable=self._keys_rhythm, command=self._regen).pack(side="left", padx=12)
 
         self._text = tk.Text(self, wrap="word", font=("Consolas", 11))
         self._text.pack(fill="both", expand=True, padx=10, pady=6)
@@ -1106,7 +1108,7 @@ class ExportDialog(tk.Toplevel):
         if fmt == "number":
             return score_to_numbers(self._score, tonic=self._tonic.get())
         if fmt == "keys":
-            return score_to_keys(self._score, self._mapping)
+            return score_to_keys(self._score, self._mapping, include_rhythm=self._keys_rhythm.get())
         return score_to_text(self._score)
 
     def _regen(self) -> None:

@@ -75,40 +75,101 @@ def score_to_numbers(score: Score, tonic: str = "C", base_octave: int = 4, per_l
     return "\n".join(lines) + "\n"
 
 
+def _event_keys(event, mapping: KeyMapping | None) -> tuple[list[str], int]:
+    keys: list[str] = []
+    seen: set[str] = set()
+    skipped = 0
+    for midi in event.midi_notes:
+        key = mapping.resolve(midi) if mapping is not None else None
+        if key is None:
+            skipped += 1
+            continue
+        if key in seen:
+            continue
+        seen.add(key)
+        keys.append(key)
+    return keys, skipped
+
+
 def score_to_keys(
-    score: Score, mapping: KeyMapping | None, beats_per_bar: int = 4, bars_per_line: int = 4
+    score: Score,
+    mapping: KeyMapping | None,
+    beats_per_bar: int = 4,
+    bars_per_line: int = 4,
+    include_rhythm: bool = False,
 ) -> str:
-    """Score を共有用のキー文字譜へ変換する（実際に押すキーの並び）。"""
+    """Score を共有用のキー文字譜へ変換する（実際に押すキーの並び）。
+
+    include_rhythm=True のとき、休符（_）と音の長さ（:拍）も書き出して
+    リズムを再現できるようにする。
+    """
     header = []
     if score.title:
         header.append(f"# {score.title}")
-    header.append("# キー譜  [ ]=同時押し / | =小節区切り")
+    if include_rhythm:
+        header.append("# キー譜  [ ]=同時押し / _=休符 / :拍数 / | =小節区切り")
+    else:
+        header.append("# キー譜  [ ]=同時押し / | =小節区切り")
     if mapping is not None:
         header.append(f"# 割り当て: {mapping.name}")
+    lines = list(header)
 
+    if include_rhythm:
+        items: list[tuple[float, str]] = []  # (拍位置, トークン)
+        cursor = 0.0
+        skipped = 0
+        for event in sorted(score.events, key=lambda e: e.start_beat):
+            gap = event.start_beat - cursor
+            if gap > 1e-6:
+                items.append((cursor, "_" if abs(gap - 1.0) < 1e-9 else f"_:{_fmt(gap)}"))
+                cursor += gap
+            if event.is_rest:
+                continue
+            keys, sk = _event_keys(event, mapping)
+            skipped += sk
+            dur = event.duration_beat
+            if not keys:  # 割り当て無し → タイミング維持のため休符に
+                items.append((event.start_beat, "_" if abs(dur - 1.0) < 1e-9 else f"_:{_fmt(dur)}"))
+            else:
+                token = keys[0] if len(keys) == 1 else "[" + "".join(keys) + "]"
+                if abs(dur - 1.0) > 1e-9:
+                    token += f":{_fmt(dur)}"
+                items.append((event.start_beat, token))
+            cursor = event.start_beat + dur
+
+        if not items:
+            lines.append("（変換できるキーがありません）")
+            return "\n".join(lines) + "\n"
+
+        out: list[str] = []
+        prev_bar = -1
+        for beat, token in items:
+            bar = int(beat // beats_per_bar) if beats_per_bar > 0 else 0
+            if bar != prev_bar and out:
+                out.append("|")
+            prev_bar = bar
+            out.append(token)
+        per_line = 16
+        for i in range(0, len(out), per_line):
+            lines.append(" ".join(out[i : i + per_line]))
+        if skipped:
+            lines.append(f"# 注: {skipped} 音は現在の割り当てにキーが無いため休符化")
+        return "\n".join(lines) + "\n"
+
+    # リズム無し（簡易・小節グループ）
     bars: dict[int, list[str]] = {}
     skipped = 0
     for event in sorted(score.events, key=lambda e: e.start_beat):
         if event.is_rest:
             continue
-        keys: list[str] = []
-        seen: set[str] = set()
-        for midi in event.midi_notes:
-            key = mapping.resolve(midi) if mapping is not None else None
-            if key is None:
-                skipped += 1
-                continue
-            if key in seen:
-                continue
-            seen.add(key)
-            keys.append(key)
+        keys, sk = _event_keys(event, mapping)
+        skipped += sk
         if not keys:
             continue
         token = keys[0] if len(keys) == 1 else "[" + "".join(keys) + "]"
         bar = int(event.start_beat // beats_per_bar) if beats_per_bar > 0 else 0
         bars.setdefault(bar, []).append(token)
 
-    lines = list(header)
     if not bars:
         lines.append("（変換できるキーがありません）")
         return "\n".join(lines) + "\n"
