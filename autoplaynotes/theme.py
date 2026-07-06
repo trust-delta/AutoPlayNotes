@@ -90,6 +90,13 @@ def apply_theme(root: tk.Misc, dark: bool) -> dict[str, str]:
 
     style.configure("TSeparator", background=p["border"])
 
+    style.configure("TNotebook", background=p["bg"], bordercolor=p["border"], tabmargins=(4, 4, 4, 0))
+    style.configure("TNotebook.Tab", background=p["surface_alt"], foreground=p["subtle"],
+                    padding=(16, 7), bordercolor=p["border"])
+    style.map("TNotebook.Tab",
+              background=[("selected", p["surface"]), ("active", p["border"])],
+              foreground=[("selected", p["text"])])
+
     # tk.Menu（OptionMenu のドロップダウン等）の既定色
     root.option_add("*Menu.background", p["surface"])
     root.option_add("*Menu.foreground", p["text"])

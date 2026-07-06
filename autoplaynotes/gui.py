@@ -91,8 +91,6 @@ class App:
 
     # --- UI 構築 --------------------------------------------------------------
     def _build_ui(self) -> None:
-        pad = {"padx": 6, "pady": 4}
-
         # ヘッダ
         header = ttk.Frame(self.root)
         header.pack(fill="x", padx=10, pady=(10, 2))
@@ -105,109 +103,88 @@ class App:
         self._update_theme_btn()
         ttk.Separator(self.root, orient="horizontal").pack(fill="x", padx=10, pady=(2, 4))
 
-        # 上部: マッピングと演奏パラメータ
-        top = ttk.LabelFrame(self.root, text="演奏設定")
-        top.pack(fill="x", **pad)
-
-        ttk.Label(top, text="キー割り当て:").grid(row=0, column=0, sticky="w", padx=4, pady=4)
-        self._mapping_menu = ttk.OptionMenu(
-            top, self._mapping_var, self.config.active_mapping,
-            *self.config.mapping_names(), command=self._on_mapping_change,
-        )
-        self._mapping_menu.grid(row=0, column=1, sticky="w", padx=4, pady=4)
-        ttk.Button(top, text="割り当てを編集...", command=self._edit_mapping).grid(
-            row=0, column=2, sticky="w", padx=4, pady=4
-        )
-        ttk.Button(top, text="割り当てを確認", command=self._show_mapping).grid(
-            row=0, column=3, sticky="w", padx=4, pady=4
-        )
-
-        params = ttk.Frame(top)
-        params.grid(row=1, column=0, columnspan=6, sticky="w")
-
-        self._tempo = self._add_field(params, "テンポ(BPM)", self.config.tempo_bpm, 0)
-        self._octave = self._add_field(params, "既定オクターブ", self.config.default_octave, 2)
-        self._countin = self._add_field(params, "開始前カウント(秒)", self.config.count_in_seconds, 4)
-        self._gate = self._add_field(params, "押下時間(ms)", self.config.gate_ms, 6)
-        self._speed = self._add_field(params, "速度倍率", self.config.speed, 8)
-
-        human = ttk.Frame(top)
-        human.grid(row=2, column=0, columnspan=6, sticky="w")
-        ttk.Label(human, text="自然さ:", foreground="#444").grid(
-            row=0, column=0, sticky="e", padx=(4, 2), pady=4
-        )
-        self._jitter = self._add_field(human, "タイミング揺れ(±ms)", self.config.timing_jitter_ms, 1)
-        self._gatejit = self._add_field(human, "音長揺れ(±%)", self.config.gate_jitter_pct, 3)
-        self._roll = self._add_field(human, "和音ロール(ms)", self.config.chord_roll_ms, 5)
-
-        # 中央: 楽譜ソース
-        src = ttk.LabelFrame(self.root, text="楽譜")
-        src.pack(fill="both", expand=True, **pad)
-
-        radios = ttk.Frame(src)
-        radios.pack(fill="x")
-        ttk.Radiobutton(
-            radios, text="テキスト記譜(CDE)", variable=self._source, value="text",
-            command=self._update_source,
-        ).pack(side="left", padx=4, pady=4)
-        ttk.Radiobutton(
-            radios, text="数字譜(1234567)", variable=self._source, value="number",
-            command=self._update_source,
-        ).pack(side="left", padx=4, pady=4)
-        ttk.Radiobutton(
-            radios, text="MIDI ファイル", variable=self._source, value="midi",
-            command=self._update_source,
-        ).pack(side="left", padx=4, pady=4)
-
-        ttk.Button(radios, text="テキストを開く...", command=self._open_text).pack(side="left", padx=4)
-        ttk.Button(radios, text="テキストを保存...", command=self._save_text).pack(side="left", padx=4)
-        ttk.Button(radios, text="MIDI を選択...", command=self._open_midi).pack(side="left", padx=4)
-        ttk.Button(radios, text="トラック...", command=self._open_midi_tracks).pack(side="left", padx=2)
-        ttk.Button(radios, text="五線譜で表示/編集", command=self._open_staff).pack(side="left", padx=4)
-        ttk.Button(radios, text="🎮 練習モード", command=self._open_practice).pack(side="left", padx=4)
-        ttk.Button(radios, text="エクスポート/変換", command=self._open_export).pack(side="left", padx=4)
-        ttk.Button(radios, text="プレビュー", command=self._preview).pack(side="left", padx=4)
-
-        midi_row = ttk.Frame(src)
-        midi_row.pack(fill="x")
-        ttk.Label(midi_row, text="MIDI:").pack(side="left", padx=4)
-        ttk.Label(midi_row, textvariable=self._midi_path, foreground="#555").pack(side="left")
-
-        self._notation = tk.Text(src, height=12, wrap="word", font=("Consolas", 11), undo=True)
-        self._notation.pack(fill="both", expand=True, padx=4, pady=4)
-        self._notation.insert("1.0", SAMPLE_NOTATION)
-
-        # 下部: 操作とログ
-        controls = ttk.Frame(self.root)
-        controls.pack(fill="x", **pad)
-        self._start_btn = ttk.Button(
-            controls, text=f"▶ 演奏開始 ({self.config.hotkey_start})", command=self._on_start,
-            style="Accent.TButton",
-        )
-        self._start_btn.pack(side="left", padx=4)
-        self._stop_btn = ttk.Button(
-            controls, text=f"■ 停止 ({self.config.hotkey_stop})", command=self._on_stop,
-            state="disabled", style="Danger.TButton",
-        )
-        self._stop_btn.pack(side="left", padx=4)
-        audio_state = "normal" if self.audio.is_available() else "disabled"
-        ttk.Button(controls, text="🔊 音で試聴", command=self._audio_preview,
-                   state=audio_state).pack(side="left", padx=4)
-        ttk.Button(controls, text="■ 音停止", command=self.audio.stop,
-                   state=audio_state).pack(side="left", padx=2)
-
-        # ステータスバー（最下部）
+        # ステータスバー（最下部・タブ外）
         status_bar = ttk.Frame(self.root)
         status_bar.pack(side="bottom", fill="x")
         ttk.Label(status_bar, textvariable=self._status_var, style="Status.TLabel",
                   anchor="w").pack(fill="x")
 
-        # プレイリスト
-        pl = ttk.LabelFrame(self.root, text="プレイリスト（連続再生）")
-        pl.pack(fill="x", **pad)
+        # タブ
+        nb = ttk.Notebook(self.root)
+        nb.pack(fill="both", expand=True, padx=8, pady=(0, 6))
+        tab_play = ttk.Frame(nb)
+        tab_playlist = ttk.Frame(nb)
+        tab_settings = ttk.Frame(nb)
+        tab_log = ttk.Frame(nb)
+        nb.add(tab_play, text="  演奏  ")
+        nb.add(tab_playlist, text="  プレイリスト  ")
+        nb.add(tab_settings, text="  設定  ")
+        nb.add(tab_log, text="  ログ  ")
+
+        self._build_play_tab(tab_play)
+        self._build_playlist_tab(tab_playlist)
+        self._build_settings_tab(tab_settings)
+        self._build_log_tab(tab_log)
+
+        self._update_source()
+
+    def _build_play_tab(self, parent: ttk.Frame) -> None:
+        # 楽譜ソースと入力
+        src = ttk.LabelFrame(parent, text="楽譜")
+        src.pack(fill="both", expand=True, padx=8, pady=8)
+
+        radios = ttk.Frame(src)
+        radios.pack(fill="x", padx=4, pady=(6, 2))
+        for text, value in (("テキスト記譜(CDE)", "text"), ("数字譜(1234567)", "number"),
+                            ("MIDI ファイル", "midi")):
+            ttk.Radiobutton(radios, text=text, variable=self._source, value=value,
+                            command=self._update_source).pack(side="left", padx=4)
+
+        files = ttk.Frame(src)
+        files.pack(fill="x", padx=4, pady=2)
+        ttk.Button(files, text="テキストを開く...", command=self._open_text).pack(side="left", padx=2)
+        ttk.Button(files, text="テキストを保存...", command=self._save_text).pack(side="left", padx=2)
+        ttk.Button(files, text="MIDI を選択...", command=self._open_midi).pack(side="left", padx=2)
+        ttk.Button(files, text="トラック...", command=self._open_midi_tracks).pack(side="left", padx=2)
+        ttk.Label(files, text="MIDI:").pack(side="left", padx=(10, 2))
+        ttk.Label(files, textvariable=self._midi_path, style="Sub.TLabel").pack(side="left")
+
+        tools = ttk.Frame(src)
+        tools.pack(fill="x", padx=4, pady=2)
+        ttk.Button(tools, text="五線譜で表示/編集", command=self._open_staff).pack(side="left", padx=2)
+        ttk.Button(tools, text="🎮 練習モード", command=self._open_practice).pack(side="left", padx=2)
+        ttk.Button(tools, text="エクスポート/変換", command=self._open_export).pack(side="left", padx=2)
+        ttk.Button(tools, text="プレビュー", command=self._preview).pack(side="left", padx=2)
+
+        self._notation = tk.Text(src, height=14, wrap="word", font=("Consolas", 11), undo=True)
+        self._notation.pack(fill="both", expand=True, padx=6, pady=6)
+        self._notation.insert("1.0", SAMPLE_NOTATION)
+
+        # 操作
+        controls = ttk.Frame(parent)
+        controls.pack(fill="x", padx=8, pady=(0, 8))
+        self._start_btn = ttk.Button(
+            controls, text=f"▶ 演奏開始 ({self.config.hotkey_start})", command=self._on_start,
+            style="Accent.TButton",
+        )
+        self._start_btn.pack(side="left", padx=2)
+        self._stop_btn = ttk.Button(
+            controls, text=f"■ 停止 ({self.config.hotkey_stop})", command=self._on_stop,
+            state="disabled", style="Danger.TButton",
+        )
+        self._stop_btn.pack(side="left", padx=2)
+        audio_state = "normal" if self.audio.is_available() else "disabled"
+        ttk.Button(controls, text="🔊 音で試聴", command=self._audio_preview,
+                   state=audio_state).pack(side="left", padx=2)
+        ttk.Button(controls, text="■ 音停止", command=self.audio.stop,
+                   state=audio_state).pack(side="left", padx=2)
+
+    def _build_playlist_tab(self, parent: ttk.Frame) -> None:
+        pl = ttk.Frame(parent)
+        pl.pack(fill="both", expand=True, padx=8, pady=8)
         list_row = ttk.Frame(pl)
-        list_row.pack(fill="x", padx=4, pady=2)
-        self._pl_list = tk.Listbox(list_row, height=4, activestyle="dotbox")
+        list_row.pack(fill="both", expand=True, padx=2, pady=2)
+        self._pl_list = tk.Listbox(list_row, activestyle="dotbox")
         pl_scroll = ttk.Scrollbar(list_row, command=self._pl_list.yview)
         self._pl_list.configure(yscrollcommand=pl_scroll.set)
         pl_scroll.pack(side="right", fill="y")
@@ -215,7 +192,7 @@ class App:
         self._pl_list.bind("<Double-Button-1>", lambda e: self._pl_play_selected())
 
         pl_btns = ttk.Frame(pl)
-        pl_btns.pack(fill="x", padx=4, pady=2)
+        pl_btns.pack(fill="x", padx=2, pady=4)
         ttk.Button(pl_btns, text="＋現在の楽譜", command=self._pl_add_current).pack(side="left", padx=1)
         ttk.Button(pl_btns, text="＋ファイル", command=self._pl_add_files).pack(side="left", padx=1)
         ttk.Button(pl_btns, text="削除", command=self._pl_remove).pack(side="left", padx=1)
@@ -224,22 +201,57 @@ class App:
         ttk.Button(pl_btns, text="クリア", command=self._pl_clear).pack(side="left", padx=1)
         ttk.Separator(pl_btns, orient="vertical").pack(side="left", fill="y", padx=6)
         ttk.Button(pl_btns, text="⏮", width=3, command=lambda: self._goto_relative(-1)).pack(side="left", padx=1)
-        ttk.Button(pl_btns, text="▶ 再生", command=self._pl_play_selected).pack(side="left", padx=1)
+        ttk.Button(pl_btns, text="▶ 再生", command=self._pl_play_selected, style="Accent.TButton").pack(side="left", padx=1)
         ttk.Button(pl_btns, text="⏭", width=3, command=lambda: self._goto_relative(1)).pack(side="left", padx=1)
         ttk.Checkbutton(pl_btns, text="ループ", variable=self._loop_var).pack(side="left", padx=6)
         ttk.Button(pl_btns, text="ミニプレイヤー", command=self._open_miniplayer).pack(side="right", padx=2)
         self._refresh_playlist_listbox()
 
-        log_frame = ttk.LabelFrame(self.root, text="ログ")
-        log_frame.pack(fill="both", expand=True, **pad)
-        self._log_text = tk.Text(log_frame, height=8, wrap="word", state="disabled",
-                                 font=("Consolas", 10))
+    def _build_settings_tab(self, parent: ttk.Frame) -> None:
+        mapping_box = ttk.LabelFrame(parent, text="キー割り当て")
+        mapping_box.pack(fill="x", padx=8, pady=(8, 4))
+        row = ttk.Frame(mapping_box)
+        row.pack(fill="x", padx=6, pady=6)
+        ttk.Label(row, text="プリセット:").pack(side="left")
+        self._mapping_menu = ttk.OptionMenu(
+            row, self._mapping_var, self.config.active_mapping,
+            *self.config.mapping_names(), command=self._on_mapping_change,
+        )
+        self._mapping_menu.pack(side="left", padx=6)
+        ttk.Button(row, text="割り当てを編集...", command=self._edit_mapping).pack(side="left", padx=2)
+        ttk.Button(row, text="割り当てを確認", command=self._show_mapping).pack(side="left", padx=2)
+
+        params_box = ttk.LabelFrame(parent, text="演奏パラメータ")
+        params_box.pack(fill="x", padx=8, pady=4)
+        params = ttk.Frame(params_box)
+        params.pack(fill="x", padx=6, pady=6)
+        self._tempo = self._add_field(params, "テンポ(BPM)", self.config.tempo_bpm, 0)
+        self._octave = self._add_field(params, "既定オクターブ", self.config.default_octave, 2)
+        self._countin = self._add_field(params, "開始前カウント(秒)", self.config.count_in_seconds, 4)
+        self._gate = self._add_field(params, "押下時間(ms)", self.config.gate_ms, 6)
+        self._speed = self._add_field(params, "速度倍率", self.config.speed, 8)
+
+        human_box = ttk.LabelFrame(parent, text="自然さ（ヒューマナイズ）")
+        human_box.pack(fill="x", padx=8, pady=4)
+        human = ttk.Frame(human_box)
+        human.pack(fill="x", padx=6, pady=6)
+        self._jitter = self._add_field(human, "タイミング揺れ(±ms)", self.config.timing_jitter_ms, 0)
+        self._gatejit = self._add_field(human, "音長揺れ(±%)", self.config.gate_jitter_pct, 2)
+        self._roll = self._add_field(human, "和音ロール(ms)", self.config.chord_roll_ms, 4)
+
+        ttk.Label(parent, style="Sub.TLabel",
+                  text=(f"ホットキー: {self.config.hotkey_start} 開始 / {self.config.hotkey_stop} 停止"
+                        "（ゲーム画面のままでも操作可）  ｜  テーマは右上のボタンで切替")
+                  ).pack(anchor="w", padx=12, pady=(6, 0))
+
+    def _build_log_tab(self, parent: ttk.Frame) -> None:
+        log_frame = ttk.Frame(parent)
+        log_frame.pack(fill="both", expand=True, padx=8, pady=8)
+        self._log_text = tk.Text(log_frame, wrap="word", state="disabled", font=("Consolas", 10))
         scroll = ttk.Scrollbar(log_frame, command=self._log_text.yview)
         self._log_text.configure(yscrollcommand=scroll.set)
         scroll.pack(side="right", fill="y")
         self._log_text.pack(side="left", fill="both", expand=True)
-
-        self._update_source()
 
     # --- テーマ ---------------------------------------------------------------
     def _apply_tk_palette(self) -> None:
