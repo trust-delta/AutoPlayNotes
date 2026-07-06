@@ -20,6 +20,7 @@ from tkinter import ttk
 
 from .keymap import KeyMapping
 from .model import Score
+from .staff import StaffCanvas
 
 # リズム: タイミング（秒）
 _LEAD = 2.0          # 画面上端から判定ラインまで落ちる時間
@@ -32,7 +33,7 @@ _STEP_GAP = 62       # ステップ間の縦間隔(px)
 
 # 描画
 _CANVAS_W = 760
-_CANVAS_H = 470
+_CANVAS_H = 340
 _TOP_Y = 12
 _HIT_Y = _CANVAS_H - 74
 _LABEL_Y = _CANVAS_H - 44
@@ -91,6 +92,9 @@ class PracticeWindow(tk.Toplevel):
         self._cur = 0
         self._pressed: set[int] = set()
         self._progress = 0.0
+        # 開始位置マーカー（停止中にシークで設定）
+        self._start_sec = 0.0
+        self._start_idx = 0
 
         self._mode = tk.StringVar(value="rhythm")
         self._speed = tk.DoubleVar(value=1.0)
@@ -195,7 +199,14 @@ class PracticeWindow(tk.Toplevel):
         ttk.OptionMenu(controls, self._speed, 1.0, 0.5, 0.75, 1.0, 1.25).pack(side="left")
         ttk.Checkbutton(controls, text="音を鳴らす", variable=self._audio_on).pack(side="left", padx=10)
 
-        ttk.Label(self, textvariable=self._instr, foreground="#666").pack(anchor="w", padx=12, pady=(0, 8))
+        ttk.Label(self, textvariable=self._instr, foreground="#666").pack(anchor="w", padx=12, pady=(0, 4))
+
+        # 下部: 実際の五線譜（参照用・編集不可）。再生位置に合わせてカーソルが動く。
+        staff_frame = ttk.LabelFrame(self, text="五線譜")
+        staff_frame.pack(fill="both", expand=True, padx=10, pady=(0, 8))
+        self.staff = StaffCanvas(staff_frame, mapping=self.mapping, editable=False, height=200)
+        self.staff.pack(fill="both", expand=True)
+        self.staff.set_score(self.score)
 
     def _apply_mode_text(self) -> None:
         if self._mode.get() == "step":
@@ -242,6 +253,8 @@ class PracticeWindow(tk.Toplevel):
         self._reset_rhythm_items()
         self._draw_static()
         self._apply_mode_text()
+        self._start_sec = 0.0
+        self._start_idx = 0
         if self._mode.get() == "step":
             self._reset_step_state()
             self._score_var.set(f"0 / {len(self._steps)}")
@@ -252,6 +265,7 @@ class PracticeWindow(tk.Toplevel):
             self._score_var.set("Score 0")
             self._combo_var.set("")
             self._judge_var.set("")
+            self._staff_cursor(-1.0)
         self._pos_var.set("")
 
     def _stop_loop(self) -> None:
@@ -284,47 +298,69 @@ class PracticeWindow(tk.Toplevel):
 
     # --- シーク（両モード共通） ----------------------------------------------
     def _seek(self, delta_sec: float) -> None:
-        if not self._running:
-            return
         if self._mode.get() == "step":
             self._seek_step(delta_sec)
         else:
             self._seek_rhythm(delta_sec)
+
+    def _staff_cursor(self, beat: float) -> None:
+        try:
+            self.staff.set_cursor(beat)
+        except Exception:
+            pass
 
     def _seek_rhythm(self, delta_sec: float) -> None:
         if not self._notes:
             return
         spb = self._spb()
         total = (self._notes[-1].beat + self._notes[-1].dur_beat) * spb
-        now = time.perf_counter() - self._t0
-        new_now = max(0.0, min(now + delta_sec, total))
-        self._t0 = time.perf_counter() - new_now
-        # 新しい位置より前は「済み扱い」、以降は再挑戦できるようリセット
-        for n in self._notes:
-            t = n.beat * spb
-            if t < new_now - _MISS_LATE:
-                n.judged = True
-            else:
-                n.judged = False
-                n.hit = False
-                n.missed = False
-        # 音声も新しい位置から鳴らし直す
-        if self._audio_on.get() and self.audio is not None and self.audio.is_available():
-            self.audio.play_score(self.score, self._eff_bpm(), start_sec=new_now)
-        self._pos_var.set(f"{_fmt_time(new_now)} / {_fmt_time(total)}")
+        if self._running:
+            now = time.perf_counter() - self._t0
+            new_now = max(0.0, min(now + delta_sec, total))
+            self._t0 = time.perf_counter() - new_now
+            for n in self._notes:
+                t = n.beat * spb
+                if t < new_now - _MISS_LATE:
+                    n.judged = True
+                else:
+                    n.judged = False
+                    n.hit = False
+                    n.missed = False
+            if self._audio_on.get() and self.audio is not None and self.audio.is_available():
+                self.audio.play_score(self.score, self._eff_bpm(), start_sec=new_now)
+            self._pos_var.set(f"{_fmt_time(new_now)} / {_fmt_time(total)}")
+            self._staff_cursor(new_now / spb)
+        else:
+            # 停止中: 開始位置マーカーを動かしてプレビュー
+            self.canvas.delete("note")
+            self._start_sec = max(0.0, min(self._start_sec + delta_sec, total))
+            self._render(self._start_sec, spb)
+            self._pos_var.set(f"開始 {_fmt_time(self._start_sec)} / {_fmt_time(total)}")
+            self._staff_cursor(self._start_sec / spb)
 
     def _seek_step(self, delta_sec: float) -> None:
         if not self._steps:
             return
         bpm = self.score.tempo_bpm if self.score.tempo_bpm > 0 else 120.0
         delta_beats = delta_sec * bpm / 60.0
-        cur = min(self._cur, len(self._steps) - 1)
-        target = self._step_beats[cur] + delta_beats
-        idx = min(range(len(self._steps)), key=lambda i: abs(self._step_beats[i] - target))
-        self._cur = idx
-        self._pressed = set()
-        self._progress = float(idx)
-        self._render_step()
+        if self._running:
+            base = min(self._cur, len(self._steps) - 1)
+            target = self._step_beats[base] + delta_beats
+            idx = min(range(len(self._steps)), key=lambda i: abs(self._step_beats[i] - target))
+            self._cur = idx
+            self._pressed = set()
+            self._progress = float(idx)
+            self._render_step()
+        else:
+            base = min(self._start_idx, len(self._steps) - 1)
+            target = self._step_beats[base] + delta_beats
+            idx = min(range(len(self._steps)), key=lambda i: abs(self._step_beats[i] - target))
+            self._start_idx = idx
+            self._cur = idx
+            self._progress = float(idx)
+            self._pressed = set()
+            self._render_step()
+            self._pos_var.set(f"開始ステップ {idx + 1} / {len(self._steps)}")
 
     # =====================================================================
     # リズムモード
@@ -345,6 +381,7 @@ class PracticeWindow(tk.Toplevel):
     def _reset_rhythm_state(self) -> None:
         if self.audio is not None:
             self.audio.stop()
+        self.canvas.delete("note")  # リザルト等の残りを消す
         for n in self._notes:
             n.judged = n.hit = n.missed = False
             if n.item is not None:
@@ -371,9 +408,16 @@ class PracticeWindow(tk.Toplevel):
             self._begin_run()
 
     def _begin_run(self) -> None:
-        self._t0 = time.perf_counter()
+        start_sec = self._start_sec
+        spb = self._spb()
+        self._t0 = time.perf_counter() - start_sec
+        for n in self._notes:
+            before = n.beat * spb < start_sec - _MISS_LATE
+            n.judged = before
+            n.hit = False
+            n.missed = False
         if self._audio_on.get() and self.audio is not None and self.audio.is_available():
-            self.audio.play_score(self.score, self._eff_bpm())
+            self.audio.play_score(self.score, self._eff_bpm(), start_sec=start_sec)
         self._running = True
         self._tick()
 
@@ -390,6 +434,7 @@ class PracticeWindow(tk.Toplevel):
         self._render(now, spb)
         last_hit = (self._notes[-1].beat + self._notes[-1].dur_beat) * spb if self._notes else 0
         self._pos_var.set(f"{_fmt_time(min(now, last_hit))} / {_fmt_time(last_hit)}")
+        self._staff_cursor(now / spb)
         if now > last_hit + 1.5:
             self._finish()
             return
@@ -492,7 +537,9 @@ class PracticeWindow(tk.Toplevel):
         if not self._steps:
             return
         self._stop_loop()
-        self._reset_step_state()
+        self._cur = min(self._start_idx, len(self._steps) - 1)
+        self._pressed = set()
+        self._progress = float(self._cur)
         self._running = True
         self._judge_var.set("")
         self._start_btn.configure(text="▶ 最初から")
@@ -564,6 +611,8 @@ class PracticeWindow(tk.Toplevel):
 
         self._score_var.set(f"{min(self._cur, len(self._steps))} / {len(self._steps)}")
         self._combo_var.set("")
+        if self._steps:
+            self._staff_cursor(self._step_beats[min(self._cur, len(self._steps) - 1)])
 
     def _finish_step(self) -> None:
         self._running = False

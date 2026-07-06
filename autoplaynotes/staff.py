@@ -88,6 +88,7 @@ class StaffCanvas(ttk.Frame):
         editable: bool = True,
         on_play_from: Callable[[float], None] | None = None,
         audio=None,
+        height: int = _HEIGHT,
     ) -> None:
         super().__init__(parent)
         self.score = Score()
@@ -97,6 +98,7 @@ class StaffCanvas(ttk.Frame):
         self.on_play_from = on_play_from
         self.audio = audio
         self.preview_on = False
+        self._height = height
 
         self.duration = 1.0            # 追加する音符の長さ(拍)
         self.add_accidental = 0        # 追加する音符の変化記号(-1/0/+1)
@@ -108,7 +110,7 @@ class StaffCanvas(ttk.Frame):
         self._sel_event: NoteEvent | None = None
         self._sel_midi: int | None = None
 
-        self.canvas = tk.Canvas(self, background="white", height=_HEIGHT, highlightthickness=0)
+        self.canvas = tk.Canvas(self, background="white", height=self._height, highlightthickness=0)
         hbar = ttk.Scrollbar(self, orient="horizontal", command=self.canvas.xview)
         self.canvas.configure(xscrollcommand=hbar.set)
         self.canvas.pack(side="top", fill="both", expand=True)
@@ -156,7 +158,7 @@ class StaffCanvas(ttk.Frame):
 
         total_beats = max(self.score.total_beats(), 8.0)
         width = self._x(total_beats + 2)
-        c.configure(scrollregion=(0, 0, width, _HEIGHT))
+        c.configure(scrollregion=(0, 0, width, self._height))
 
         for step in range(_BOTTOM_STEP, _TOP_STEP + 1, 2):
             y = self._y(step)
