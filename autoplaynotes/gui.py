@@ -71,6 +71,7 @@ class App:
         self._mapping_var = tk.StringVar(value=self.config.active_mapping)
         self._status_var = tk.StringVar(value="待機中")
         self._loop_var = tk.BooleanVar(value=self.config.loop)
+        self._tempo_var = tk.StringVar(value=f"{self.config.tempo_bpm:g}")
 
         root.title("AutoPlayNotes - 楽譜オートプレイヤー")
         root.geometry("880x860")
@@ -116,10 +117,10 @@ class App:
         tab_playlist = ttk.Frame(nb)
         tab_settings = ttk.Frame(nb)
         tab_log = ttk.Frame(nb)
-        nb.add(tab_play, text="  演奏  ")
-        nb.add(tab_playlist, text="  プレイリスト  ")
-        nb.add(tab_settings, text="  設定  ")
-        nb.add(tab_log, text="  ログ  ")
+        nb.add(tab_play, text="  🎹 演奏  ")
+        nb.add(tab_playlist, text="  🎵 プレイリスト  ")
+        nb.add(tab_settings, text="  ⚙ 設定  ")
+        nb.add(tab_log, text="  📄 ログ  ")
 
         self._build_play_tab(tab_play)
         self._build_playlist_tab(tab_playlist)
@@ -179,6 +180,12 @@ class App:
         ttk.Button(controls, text="■ 音停止", command=self.audio.stop,
                    state=audio_state).pack(side="left", padx=2)
 
+        # テンポ常設（設定タブのテンポと連動）
+        tempo_bar = ttk.Frame(controls)
+        tempo_bar.pack(side="right")
+        ttk.Label(tempo_bar, text="テンポ(BPM)").pack(side="left", padx=(0, 4))
+        ttk.Entry(tempo_bar, width=7, textvariable=self._tempo_var).pack(side="left")
+
     def _build_playlist_tab(self, parent: ttk.Frame) -> None:
         pl = ttk.Frame(parent)
         pl.pack(fill="both", expand=True, padx=8, pady=8)
@@ -225,7 +232,7 @@ class App:
         params_box.pack(fill="x", padx=8, pady=4)
         params = ttk.Frame(params_box)
         params.pack(fill="x", padx=6, pady=6)
-        self._tempo = self._add_field(params, "テンポ(BPM)", self.config.tempo_bpm, 0)
+        self._tempo = self._add_field(params, "テンポ(BPM)", self.config.tempo_bpm, 0, var=self._tempo_var)
         self._octave = self._add_field(params, "既定オクターブ", self.config.default_octave, 2)
         self._countin = self._add_field(params, "開始前カウント(秒)", self.config.count_in_seconds, 4)
         self._gate = self._add_field(params, "押下時間(ms)", self.config.gate_ms, 6)
@@ -273,10 +280,14 @@ class App:
         except Exception:
             pass
 
-    def _add_field(self, parent: ttk.Frame, label: str, value: object, col: int) -> ttk.Entry:
+    def _add_field(self, parent: ttk.Frame, label: str, value: object, col: int,
+                   var: tk.StringVar | None = None) -> ttk.Entry:
         ttk.Label(parent, text=label).grid(row=0, column=col, sticky="e", padx=(8, 2), pady=4)
-        entry = ttk.Entry(parent, width=7)
-        entry.insert(0, str(value))
+        if var is not None:
+            entry = ttk.Entry(parent, width=7, textvariable=var)
+        else:
+            entry = ttk.Entry(parent, width=7)
+            entry.insert(0, str(value))
         entry.grid(row=0, column=col + 1, sticky="w", pady=4)
         return entry
 
