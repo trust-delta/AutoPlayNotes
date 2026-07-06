@@ -38,6 +38,7 @@ class AppConfig:
     hotkey_start: str = "F9"
     hotkey_stop: str = "F10"
     loop: bool = False
+    dark: bool = False
     # ユーザー定義マッピング（プリセットを上書き / 追加）
     custom_mappings: dict[str, dict[str, Any]] = field(default_factory=dict)
     # プレイリスト（PlaylistItem.to_dict のリスト）

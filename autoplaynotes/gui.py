@@ -7,7 +7,7 @@ import tkinter as tk
 from dataclasses import replace
 from tkinter import filedialog, messagebox, ttk
 
-from . import midi_parser
+from . import midi_parser, theme
 from .audio import AudioPlayer
 from .config import AppConfig
 from .convert import score_to_keys, score_to_numbers, score_to_text
@@ -73,10 +73,14 @@ class App:
         self._loop_var = tk.BooleanVar(value=self.config.loop)
 
         root.title("AutoPlayNotes - 楽譜オートプレイヤー")
-        root.geometry("860x820")
-        root.minsize(760, 680)
+        root.geometry("880x860")
+        root.minsize(780, 700)
+
+        self._dark = tk.BooleanVar(value=self.config.dark)
+        theme.apply_theme(root, self.config.dark)
 
         self._build_ui()
+        self._apply_tk_palette()
         self._setup_hotkeys()
         self._log(
             "準備完了。ゲームを起動し楽器を構えたら、この画面で『演奏開始』"
@@ -88,6 +92,18 @@ class App:
     # --- UI 構築 --------------------------------------------------------------
     def _build_ui(self) -> None:
         pad = {"padx": 6, "pady": 4}
+
+        # ヘッダ
+        header = ttk.Frame(self.root)
+        header.pack(fill="x", padx=10, pady=(10, 2))
+        titles = ttk.Frame(header)
+        titles.pack(side="left")
+        ttk.Label(titles, text="AutoPlayNotes", style="Header.TLabel").pack(anchor="w")
+        ttk.Label(titles, text="楽譜オートプレイヤー ＆ 練習トレーナー", style="Sub.TLabel").pack(anchor="w")
+        self._theme_btn = ttk.Button(header, text="", width=12, command=self._toggle_theme)
+        self._theme_btn.pack(side="right")
+        self._update_theme_btn()
+        ttk.Separator(self.root, orient="horizontal").pack(fill="x", padx=10, pady=(2, 4))
 
         # 上部: マッピングと演奏パラメータ
         top = ttk.LabelFrame(self.root, text="演奏設定")
@@ -165,11 +181,13 @@ class App:
         controls = ttk.Frame(self.root)
         controls.pack(fill="x", **pad)
         self._start_btn = ttk.Button(
-            controls, text=f"演奏開始 ({self.config.hotkey_start})", command=self._on_start
+            controls, text=f"▶ 演奏開始 ({self.config.hotkey_start})", command=self._on_start,
+            style="Accent.TButton",
         )
         self._start_btn.pack(side="left", padx=4)
         self._stop_btn = ttk.Button(
-            controls, text=f"停止 ({self.config.hotkey_stop})", command=self._on_stop, state="disabled"
+            controls, text=f"■ 停止 ({self.config.hotkey_stop})", command=self._on_stop,
+            state="disabled", style="Danger.TButton",
         )
         self._stop_btn.pack(side="left", padx=4)
         audio_state = "normal" if self.audio.is_available() else "disabled"
@@ -177,9 +195,12 @@ class App:
                    state=audio_state).pack(side="left", padx=4)
         ttk.Button(controls, text="■ 音停止", command=self.audio.stop,
                    state=audio_state).pack(side="left", padx=2)
-        ttk.Label(controls, textvariable=self._status_var, font=("", 10, "bold")).pack(
-            side="left", padx=16
-        )
+
+        # ステータスバー（最下部）
+        status_bar = ttk.Frame(self.root)
+        status_bar.pack(side="bottom", fill="x")
+        ttk.Label(status_bar, textvariable=self._status_var, style="Status.TLabel",
+                  anchor="w").pack(fill="x")
 
         # プレイリスト
         pl = ttk.LabelFrame(self.root, text="プレイリスト（連続再生）")
@@ -219,6 +240,26 @@ class App:
         self._log_text.pack(side="left", fill="both", expand=True)
 
         self._update_source()
+
+    # --- テーマ ---------------------------------------------------------------
+    def _apply_tk_palette(self) -> None:
+        """ttk 以外（Text / Listbox）の色をパレットに合わせる。"""
+        theme.style_text(self._notation)
+        theme.style_text(self._log_text, log=True)
+        theme.style_listbox(self._pl_list)
+
+    def _update_theme_btn(self) -> None:
+        self._theme_btn.configure(text=("☀ ライト" if self.config.dark else "🌙 ダーク"))
+
+    def _toggle_theme(self) -> None:
+        self.config.dark = not self.config.dark
+        theme.apply_theme(self.root, self.config.dark)
+        self._apply_tk_palette()
+        self._update_theme_btn()
+        try:
+            self.config.save()
+        except Exception:
+            pass
 
     def _add_field(self, parent: ttk.Frame, label: str, value: object, col: int) -> ttk.Entry:
         ttk.Label(parent, text=label).grid(row=0, column=col, sticky="e", padx=(8, 2), pady=4)
@@ -897,6 +938,7 @@ class MappingEditor(tk.Toplevel):
         ).pack(side="left")
 
         self._text = tk.Text(self, font=("Consolas", 11), undo=True)
+        theme.style_text(self._text)
         self._text.pack(fill="both", expand=True, padx=8, pady=4)
         self._text.insert("1.0", mapping.as_text())
 
@@ -950,7 +992,7 @@ class MidiTrackDialog(tk.Toplevel):
         # スクロール可能なパート一覧
         container = ttk.Frame(self)
         container.pack(fill="both", expand=True, padx=10)
-        canvas = tk.Canvas(container, highlightthickness=0)
+        canvas = tk.Canvas(container, highlightthickness=0, background=theme.palette()["surface"])
         scroll = ttk.Scrollbar(container, orient="vertical", command=canvas.yview)
         inner = ttk.Frame(canvas)
         inner.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
@@ -1090,6 +1132,7 @@ class ExportDialog(tk.Toplevel):
                         variable=self._keys_rhythm, command=self._regen).pack(side="left", padx=12)
 
         self._text = tk.Text(self, wrap="word", font=("Consolas", 11))
+        theme.style_text(self._text)
         self._text.pack(fill="both", expand=True, padx=10, pady=6)
 
         buttons = ttk.Frame(self)
