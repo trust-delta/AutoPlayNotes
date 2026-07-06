@@ -16,6 +16,7 @@ from .model import Score
 from .number_parser import parse_numbers
 from .player import PlaybackOptions, Player, preview_lines
 from .playlist import Playlist, PlaylistItem
+from .practice import PracticeWindow
 from .staff import StaffWindow
 from .text_parser import parse_text
 from .win_input import KeySender
@@ -146,6 +147,7 @@ class App:
         ttk.Button(radios, text="MIDI を選択...", command=self._open_midi).pack(side="left", padx=4)
         ttk.Button(radios, text="トラック...", command=self._open_midi_tracks).pack(side="left", padx=2)
         ttk.Button(radios, text="五線譜で表示/編集", command=self._open_staff).pack(side="left", padx=4)
+        ttk.Button(radios, text="🎮 練習モード", command=self._open_practice).pack(side="left", padx=4)
         ttk.Button(radios, text="プレビュー", command=self._preview).pack(side="left", padx=4)
 
         midi_row = ttk.Frame(src)
@@ -555,6 +557,15 @@ class App:
         )
         window.protocol("WM_DELETE_WINDOW", lambda: self._close_staff(window))
         self._staff_window = window
+
+    def _open_practice(self) -> None:
+        score = self._build_score()
+        if score is None:
+            return
+        if not score.events:
+            messagebox.showwarning("空の楽譜", "練習できる音がありません。")
+            return
+        PracticeWindow(self.root, score, self._current_mapping(), audio=self.audio)
 
     def _close_staff(self, window: StaffWindow) -> None:
         if self._staff_window is window:
