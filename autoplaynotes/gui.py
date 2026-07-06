@@ -10,6 +10,7 @@ from tkinter import filedialog, messagebox, ttk
 from . import midi_parser
 from .audio import AudioPlayer
 from .config import AppConfig
+from .convert import score_to_keys, score_to_numbers, score_to_text
 from .hotkey import HotkeyManager
 from .keymap import KeyMapping
 from .model import Score
@@ -148,6 +149,7 @@ class App:
         ttk.Button(radios, text="トラック...", command=self._open_midi_tracks).pack(side="left", padx=2)
         ttk.Button(radios, text="五線譜で表示/編集", command=self._open_staff).pack(side="left", padx=4)
         ttk.Button(radios, text="🎮 練習モード", command=self._open_practice).pack(side="left", padx=4)
+        ttk.Button(radios, text="エクスポート/変換", command=self._open_export).pack(side="left", padx=4)
         ttk.Button(radios, text="プレビュー", command=self._preview).pack(side="left", padx=4)
 
         midi_row = ttk.Frame(src)
@@ -566,6 +568,22 @@ class App:
             messagebox.showwarning("空の楽譜", "練習できる音がありません。")
             return
         PracticeWindow(self.root, score, self._current_mapping(), audio=self.audio)
+
+    def _open_export(self) -> None:
+        score = self._build_score()
+        if score is None:
+            return
+        if not score.events:
+            messagebox.showwarning("空の楽譜", "変換できる音がありません。")
+            return
+        ExportDialog(self.root, score, self._current_mapping(), on_reflect=self._reflect_export)
+
+    def _reflect_export(self, content: str, mode: str) -> None:
+        self._source.set(mode)
+        self._update_source()
+        self._notation.delete("1.0", "end")
+        self._notation.insert("1.0", content)
+        self._log(f"変換結果を{'数字譜' if mode == 'number' else 'テキスト'}欄に読み込みました。")
 
     def _close_staff(self, window: StaffWindow) -> None:
         if self._staff_window is window:
@@ -1039,6 +1057,89 @@ class MiniPlayerWindow(tk.Toplevel):
         self._pos_var.set(pos)
         self._status_var.set(status)
         self._toggle_btn.configure(text="■ 停止" if playing else "▶ 再生")
+
+
+class ExportDialog(tk.Toplevel):
+    """楽譜を別形式へ変換 / 共有用にエクスポートするダイアログ。"""
+
+    def __init__(self, parent: tk.Tk, score: Score, mapping: KeyMapping, on_reflect) -> None:
+        super().__init__(parent)
+        self.title("エクスポート / 変換")
+        self.geometry("560x520")
+        self._score = score
+        self._mapping = mapping
+        self._on_reflect = on_reflect
+
+        self._format = tk.StringVar(value="text")
+        self._tonic = tk.StringVar(value="C")
+
+        opt = ttk.Frame(self)
+        opt.pack(fill="x", padx=10, pady=(10, 4))
+        ttk.Label(opt, text="出力形式:").pack(side="left")
+        for label, value in (("テキスト(CDE)", "text"), ("数字譜(1-7)", "number"), ("キー文字譜(共有用)", "keys")):
+            ttk.Radiobutton(opt, text=label, variable=self._format, value=value,
+                            command=self._regen).pack(side="left", padx=2)
+
+        key_row = ttk.Frame(self)
+        key_row.pack(fill="x", padx=10)
+        ttk.Label(key_row, text="数字譜の主音:").pack(side="left")
+        ttk.OptionMenu(key_row, self._tonic, "C", "C", "G", "D", "A", "E", "F", "Bb", "Eb",
+                       command=lambda _v: self._regen()).pack(side="left", padx=4)
+        ttk.Label(key_row, text="（数字譜のときのみ）", foreground="#666").pack(side="left")
+
+        self._text = tk.Text(self, wrap="word", font=("Consolas", 11))
+        self._text.pack(fill="both", expand=True, padx=10, pady=6)
+
+        buttons = ttk.Frame(self)
+        buttons.pack(fill="x", padx=10, pady=(0, 10))
+        ttk.Button(buttons, text="コピー", command=self._copy).pack(side="left")
+        ttk.Button(buttons, text="保存...", command=self._save).pack(side="left", padx=4)
+        self._reflect_btn = ttk.Button(buttons, text="この形式で楽譜欄に反映", command=self._reflect)
+        self._reflect_btn.pack(side="left", padx=4)
+        ttk.Button(buttons, text="閉じる", command=self.destroy).pack(side="right")
+
+        self.transient(parent)
+        self._regen()
+
+    def _current_text(self) -> str:
+        fmt = self._format.get()
+        if fmt == "number":
+            return score_to_numbers(self._score, tonic=self._tonic.get())
+        if fmt == "keys":
+            return score_to_keys(self._score, self._mapping)
+        return score_to_text(self._score)
+
+    def _regen(self) -> None:
+        content = self._current_text()
+        self._text.delete("1.0", "end")
+        self._text.insert("1.0", content)
+        # キー文字譜は本アプリの入力形式ではないので反映不可
+        self._reflect_btn.configure(state=("disabled" if self._format.get() == "keys" else "normal"))
+
+    def _copy(self) -> None:
+        self.clipboard_clear()
+        self.clipboard_append(self._text.get("1.0", "end").rstrip("\n"))
+
+    def _save(self) -> None:
+        path = filedialog.asksaveasfilename(
+            title="保存", defaultextension=".txt", filetypes=[("テキスト", "*.txt"), ("すべて", "*.*")]
+        )
+        if not path:
+            return
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(self._text.get("1.0", "end"))
+        except Exception as exc:
+            messagebox.showerror("保存エラー", str(exc), parent=self)
+            return
+        messagebox.showinfo("保存", f"保存しました: {os.path.basename(path)}", parent=self)
+
+    def _reflect(self) -> None:
+        fmt = self._format.get()
+        if fmt == "keys":
+            return
+        self._on_reflect(self._text.get("1.0", "end"), "number" if fmt == "number" else "text")
+        self.destroy()
 
 
 def run() -> None:
