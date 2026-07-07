@@ -18,9 +18,11 @@ from __future__ import annotations
 
 import time
 import tkinter as tk
-from tkinter import ttk
 from typing import Callable
 
+import customtkinter as ctk
+
+from . import theme
 from .keymap import KeyMapping
 from .model import NoteEvent, Score
 
@@ -58,12 +60,7 @@ _TOP_STEP = 38   # F5
 _BOTTOM_STEP = 30  # E4
 _HEIGHT = 300
 
-# 色
-_C_PLAYABLE = "#1b5e20"
-_C_OUTRANGE = "#c62828"
-_C_PLAYED = "#64b5f6"
-_C_ACTIVE = "#ff6d00"
-_C_SELECT = "#1565c0"
+# 色はテーマのパレット（theme.palette()）から都度参照する（ライト/ダーク対応）
 
 
 class _NoteItem:
@@ -80,7 +77,7 @@ class _NoteItem:
         self.playable = playable
 
 
-class StaffCanvas(ttk.Frame):
+class StaffCanvas(ctk.CTkFrame):
     """スクロール可能な五線譜キャンバス。"""
 
     def __init__(
@@ -120,8 +117,10 @@ class StaffCanvas(ttk.Frame):
         self._band_id: int | None = None
         self._dragging = False
 
-        self.canvas = tk.Canvas(self, background="white", height=self._height, highlightthickness=0)
-        hbar = ttk.Scrollbar(self, orient="horizontal", command=self.canvas.xview)
+        self.configure(fg_color="transparent")
+        self.canvas = tk.Canvas(self, background=theme.palette()["staff_bg"],
+                                height=self._height, highlightthickness=0)
+        hbar = ctk.CTkScrollbar(self, orientation="horizontal", command=self.canvas.xview)
         self.canvas.configure(xscrollcommand=hbar.set)
         self.canvas.pack(side="top", fill="both", expand=True)
         hbar.pack(side="bottom", fill="x")
@@ -166,6 +165,8 @@ class StaffCanvas(ttk.Frame):
     # --- 描画 -----------------------------------------------------------------
     def redraw(self) -> None:
         c = self.canvas
+        p = theme.palette()
+        c.configure(background=p["staff_bg"])
         c.delete("all")
         self._items.clear()
         self._cursor_id = None
@@ -176,14 +177,16 @@ class StaffCanvas(ttk.Frame):
 
         for step in range(_BOTTOM_STEP, _TOP_STEP + 1, 2):
             y = self._y(step)
-            c.create_line(_LEFT, y, width - 10, y, fill="#333")
-        c.create_text(_LEFT - 34, self._y(34), text="\U0001D11E", font=("Segoe UI Symbol", 34))
+            c.create_line(_LEFT, y, width - 10, y, fill=p["staff_line"])
+        c.create_text(_LEFT - 34, self._y(34), text="\U0001D11E",
+                      font=("Segoe UI Symbol", 34), fill=p["text"])
 
         if self.beats_per_bar > 0:
             bar = 0
             while self._x(bar) <= width - 10:
                 x = self._x(bar)
-                c.create_line(x, self._y(_TOP_STEP), x, self._y(_BOTTOM_STEP), fill="#ddd")
+                c.create_line(x, self._y(_TOP_STEP), x, self._y(_BOTTOM_STEP),
+                              fill=p["staff_grid"])
                 bar += self.beats_per_bar
 
         for event in self.score.events:
@@ -199,17 +202,18 @@ class StaffCanvas(ttk.Frame):
 
     def _draw_note(self, event: NoteEvent, midi: int, x: float, x_end: float) -> None:
         c = self.canvas
+        p = theme.palette()
         step, accidental = midi_to_staff(midi)
         y = self._y(step)
         playable = self.mapping is None or self.mapping.resolve(midi) is not None
-        color = _C_PLAYABLE if playable else _C_OUTRANGE
+        color = p["note"] if playable else p["note_out"]
 
         if step > _TOP_STEP:
             for s in range(_TOP_STEP + 2, step + 1, 2):
-                c.create_line(x - 9, self._y(s), x + 9, self._y(s), fill="#333")
+                c.create_line(x - 9, self._y(s), x + 9, self._y(s), fill=p["staff_line"])
         elif step < _BOTTOM_STEP:
             for s in range(_BOTTOM_STEP - 2, step - 1, -2):
-                c.create_line(x - 9, self._y(s), x + 9, self._y(s), fill="#333")
+                c.create_line(x - 9, self._y(s), x + 9, self._y(s), fill=p["staff_line"])
 
         bar = None
         if x_end - x > 3:
@@ -225,22 +229,23 @@ class StaffCanvas(ttk.Frame):
         if self._is_selected(event, midi):
             c.create_oval(
                 x - _NOTE_RX - 3, y - _NOTE_RY - 3, x + _NOTE_RX + 3, y + _NOTE_RY + 3,
-                outline=_C_SELECT, width=2,
+                outline=p["select"], width=2,
             )
 
         self._items.append(_NoteItem(event, midi, x, y, x_end, oval, bar, playable))
 
     # --- 再生ハイライト -------------------------------------------------------
     def _color_for(self, item: _NoteItem) -> str:
+        p = theme.palette()
         pb = self._play_beat
         if pb is not None and pb >= 0:
             start = item.event.start_beat
             end = start + item.event.duration_beat
             if start <= pb < max(end, start + 1e-6):
-                return _C_ACTIVE
+                return p["note_active"]
             if end <= pb:
-                return _C_PLAYED
-        return _C_PLAYABLE if item.playable else _C_OUTRANGE
+                return p["note_played"]
+        return p["note"] if item.playable else p["note_out"]
 
     def _apply_playback_colors(self) -> None:
         for item in self._items:
@@ -261,7 +266,8 @@ class StaffCanvas(ttk.Frame):
             return
         x = self._x(self._play_beat)
         self._cursor_id = self.canvas.create_line(
-            x, self._y(_TOP_STEP) - 16, x, self._y(_BOTTOM_STEP) + 16, fill=_C_SELECT, width=2
+            x, self._y(_TOP_STEP) - 16, x, self._y(_BOTTOM_STEP) + 16,
+            fill=theme.palette()["select"], width=2,
         )
 
     def set_cursor(self, beat: float) -> None:
@@ -367,7 +373,7 @@ class StaffCanvas(ttk.Frame):
         x0, y0 = self._press_xy
         if self._band_id is None:
             self._band_id = self.canvas.create_rectangle(
-                x0, y0, x, y, outline=_C_SELECT, dash=(3, 2)
+                x0, y0, x, y, outline=theme.palette()["select"], dash=(3, 2)
             )
         else:
             self.canvas.coords(self._band_id, x0, y0, x, y)
@@ -545,7 +551,7 @@ _DURATIONS = {
 _ACCIDENTALS = {"♮ ナチュラル": 0, "♯ シャープ": 1, "♭ フラット": -1}
 
 
-class StaffWindow(tk.Toplevel):
+class StaffWindow(ctk.CTkToplevel):
     """五線譜プレビュー / エディタのウィンドウ。"""
 
     def __init__(
@@ -559,7 +565,8 @@ class StaffWindow(tk.Toplevel):
     ) -> None:
         super().__init__(parent)
         self.title("五線譜プレビュー / 編集")
-        self.geometry("1080x480")
+        self.geometry("1120x520")
+        theme.apply_titlebar(self)
         self._on_reflect = on_reflect
         self._on_play = on_play
         self._audio = audio
@@ -573,76 +580,87 @@ class StaffWindow(tk.Toplevel):
         )
 
         # --- ツールバー 1 行目: 追加設定とモード ---
-        bar1 = ttk.Frame(self)
-        bar1.pack(fill="x", padx=6, pady=(6, 2))
+        bar1 = ctk.CTkFrame(self, fg_color="transparent")
+        bar1.pack(fill="x", padx=10, pady=(10, 4))
 
-        ttk.Label(bar1, text="追加音の長さ:").pack(side="left")
+        ctk.CTkLabel(bar1, text="追加音の長さ:").pack(side="left")
         self._dur = tk.StringVar(value="4分 (1拍)")
-        ttk.OptionMenu(bar1, self._dur, "4分 (1拍)", *_DURATIONS.keys(),
-                       command=self._on_dur_change).pack(side="left", padx=4)
+        ctk.CTkOptionMenu(bar1, variable=self._dur, values=list(_DURATIONS.keys()),
+                          command=self._on_dur_change, width=120).pack(side="left", padx=6)
 
-        ttk.Label(bar1, text="変化記号:").pack(side="left", padx=(8, 0))
+        ctk.CTkLabel(bar1, text="変化記号:").pack(side="left", padx=(8, 0))
         self._acc = tk.StringVar(value="♮ ナチュラル")
-        ttk.OptionMenu(bar1, self._acc, "♮ ナチュラル", *_ACCIDENTALS.keys(),
-                       command=self._on_acc_change).pack(side="left", padx=4)
+        ctk.CTkOptionMenu(bar1, variable=self._acc, values=list(_ACCIDENTALS.keys()),
+                          command=self._on_acc_change, width=120).pack(side="left", padx=6)
 
-        ttk.Label(bar1, text="クリック:").pack(side="left", padx=(12, 0))
+        ctk.CTkLabel(bar1, text="クリック:").pack(side="left", padx=(12, 4))
         self._mode = tk.StringVar(value="edit")
-        ttk.Radiobutton(bar1, text="編集", variable=self._mode, value="edit",
-                        command=self._on_mode_change).pack(side="left")
-        ttk.Radiobutton(bar1, text="ここから再生", variable=self._mode, value="play",
-                        command=self._on_mode_change).pack(side="left")
+        mode_seg = ctk.CTkSegmentedButton(bar1, values=["編集", "ここから再生"],
+                                          command=self._on_mode_select)
+        mode_seg.set("編集")
+        mode_seg.pack(side="left")
 
-        ttk.Button(bar1, text="▶ 先頭から演奏", command=self._play_all).pack(side="right", padx=4)
+        ctk.CTkButton(bar1, text="▶ 先頭から演奏", width=120, command=self._play_all,
+                      **theme.BTN_ACCENT).pack(side="right", padx=(6, 0))
 
         audio_ok = audio is not None and audio.is_available()
         self._preview_var = tk.BooleanVar(value=audio_ok)
-        ttk.Checkbutton(
+        ctk.CTkCheckBox(
             bar1, text="編集時に音を鳴らす", variable=self._preview_var,
+            onvalue=True, offvalue=False,
             command=self._on_preview_toggle, state=("normal" if audio_ok else "disabled"),
-        ).pack(side="right", padx=(12, 0))
-        ttk.Button(bar1, text="■", width=3, command=self._stop_audio,
-                   state=("normal" if audio_ok else "disabled")).pack(side="right", padx=1)
-        ttk.Button(bar1, text="🔊 通し試聴", command=self._audition,
-                   state=("normal" if audio_ok else "disabled")).pack(side="right", padx=1)
+        ).pack(side="right", padx=(12, 8))
+        ctk.CTkButton(bar1, text="■", width=36, command=self._stop_audio,
+                      state=("normal" if audio_ok else "disabled")).pack(side="right", padx=2)
+        ctk.CTkButton(bar1, text="🔊 通し試聴", width=100, command=self._audition,
+                      state=("normal" if audio_ok else "disabled")).pack(side="right", padx=2)
         self.staff.preview_on = audio_ok
 
         # --- ツールバー 2 行目: 選択中の音符への操作 ---
-        bar2 = ttk.Frame(self)
-        bar2.pack(fill="x", padx=6, pady=(0, 2))
-        ttk.Button(bar2, text="↶", width=3, command=self.staff.undo).pack(side="left", padx=1)
-        ttk.Button(bar2, text="↷", width=3, command=self.staff.redo).pack(side="left", padx=(1, 8))
-        ttk.Label(bar2, text="選択中:").pack(side="left")
-        ttk.Button(bar2, text="♯", width=3,
-                   command=lambda: self.staff.set_selected_accidental(1)).pack(side="left", padx=1)
-        ttk.Button(bar2, text="♭", width=3,
-                   command=lambda: self.staff.set_selected_accidental(-1)).pack(side="left", padx=1)
-        ttk.Button(bar2, text="♮", width=3,
-                   command=lambda: self.staff.set_selected_accidental(0)).pack(side="left", padx=1)
-        ttk.Button(bar2, text="半音▲", command=lambda: self.staff.nudge_selected_semitone(1)).pack(side="left", padx=1)
-        ttk.Button(bar2, text="半音▼", command=lambda: self.staff.nudge_selected_semitone(-1)).pack(side="left", padx=1)
-        ttk.Button(bar2, text="8va▲", width=5,
-                   command=lambda: self.staff.nudge_selected_octave(1)).pack(side="left", padx=1)
-        ttk.Button(bar2, text="8vb▼", width=5,
-                   command=lambda: self.staff.nudge_selected_octave(-1)).pack(side="left", padx=1)
+        bar2 = ctk.CTkFrame(self, fg_color="transparent")
+        bar2.pack(fill="x", padx=10, pady=(0, 4))
+        ctk.CTkButton(bar2, text="↶", width=36, command=self.staff.undo).pack(side="left", padx=2)
+        ctk.CTkButton(bar2, text="↷", width=36, command=self.staff.redo).pack(side="left", padx=(2, 10))
+        ctk.CTkLabel(bar2, text="選択中:").pack(side="left", padx=(0, 4))
+        ctk.CTkButton(bar2, text="♯", width=36,
+                      command=lambda: self.staff.set_selected_accidental(1)).pack(side="left", padx=2)
+        ctk.CTkButton(bar2, text="♭", width=36,
+                      command=lambda: self.staff.set_selected_accidental(-1)).pack(side="left", padx=2)
+        ctk.CTkButton(bar2, text="♮", width=36,
+                      command=lambda: self.staff.set_selected_accidental(0)).pack(side="left", padx=2)
+        ctk.CTkButton(bar2, text="半音▲", width=60,
+                      command=lambda: self.staff.nudge_selected_semitone(1)).pack(side="left", padx=2)
+        ctk.CTkButton(bar2, text="半音▼", width=60,
+                      command=lambda: self.staff.nudge_selected_semitone(-1)).pack(side="left", padx=2)
+        ctk.CTkButton(bar2, text="8va▲", width=56,
+                      command=lambda: self.staff.nudge_selected_octave(1)).pack(side="left", padx=2)
+        ctk.CTkButton(bar2, text="8vb▼", width=56,
+                      command=lambda: self.staff.nudge_selected_octave(-1)).pack(side="left", padx=2)
         self._ripple = tk.BooleanVar(value=False)
-        ttk.Button(bar2, text="◀", width=3, command=lambda: self._move_time(-1)).pack(side="left", padx=(6, 1))
-        ttk.Button(bar2, text="▶", width=3, command=lambda: self._move_time(1)).pack(side="left", padx=1)
-        ttk.Checkbutton(bar2, text="以降も一緒に", variable=self._ripple).pack(side="left", padx=2)
-        ttk.Button(bar2, text="長さを適用", command=self.staff.apply_duration_to_selected).pack(side="left", padx=4)
-        ttk.Button(bar2, text="削除", command=self.staff.delete_selected).pack(side="left", padx=1)
+        ctk.CTkButton(bar2, text="◀", width=36,
+                      command=lambda: self._move_time(-1)).pack(side="left", padx=(8, 2))
+        ctk.CTkButton(bar2, text="▶", width=36,
+                      command=lambda: self._move_time(1)).pack(side="left", padx=2)
+        ctk.CTkCheckBox(bar2, text="以降も一緒に", variable=self._ripple,
+                        onvalue=True, offvalue=False, width=110).pack(side="left", padx=4)
+        ctk.CTkButton(bar2, text="長さを適用", width=90,
+                      command=self.staff.apply_duration_to_selected).pack(side="left", padx=4)
+        ctk.CTkButton(bar2, text="削除", width=60,
+                      command=self.staff.delete_selected).pack(side="left", padx=2)
 
-        ttk.Button(bar2, text="テキストに反映", command=self._reflect).pack(side="right", padx=4)
-        ttk.Button(bar2, text="全消去", command=self._clear).pack(side="right", padx=4)
+        ctk.CTkButton(bar2, text="テキストに反映", width=110,
+                      command=self._reflect).pack(side="right", padx=(6, 0))
+        ctk.CTkButton(bar2, text="全消去", width=70,
+                      command=self._clear, **theme.BTN_DANGER).pack(side="right", padx=6)
 
-        ttk.Label(
+        ctk.CTkLabel(
             self,
             text="クリック=追加/選択  ドラッグ=まとめて選択  Ctrl+クリック=選択に追加  右クリック=削除"
                  "  ｜  矢印キー=移動  Delete=削除  Ctrl+Z/Y=元に戻す/やり直す  Ctrl+A=全選択",
-            foreground="#666",
-        ).pack(anchor="w", padx=8)
+            text_color=theme.pair("subtle"),
+        ).pack(anchor="w", padx=12)
 
-        self.staff.pack(fill="both", expand=True, padx=6, pady=4)
+        self.staff.pack(fill="both", expand=True, padx=10, pady=(4, 10))
         self.staff.set_score(score)
 
         # キーボードショートカット（選択中の音符を操作）
@@ -665,8 +683,16 @@ class StaffWindow(tk.Toplevel):
     def _on_acc_change(self, label: str) -> None:
         self.staff.add_accidental = _ACCIDENTALS.get(label, 0)
 
-    def _on_mode_change(self) -> None:
+    def _on_mode_select(self, label: str) -> None:
+        self._mode.set("play" if label == "ここから再生" else "edit")
         self.staff.click_mode = self._mode.get()
+
+    def refresh_theme(self) -> None:
+        """テーマ切替時にキャンバスの配色を描き直す。"""
+        try:
+            self.staff.redraw()
+        except tk.TclError:
+            pass
 
     def _play_all(self) -> None:
         self._on_play(self.staff.get_score(), 0.0)

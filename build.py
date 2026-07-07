@@ -19,6 +19,9 @@ def main() -> int:
         "--onefile",          # 単一 exe
         "--windowed",         # コンソール無し（GUI アプリ）
         "--name", "AutoPlayNotes",
+        "--icon", "assets/icon.ico",
+        "--add-data", "assets;assets",       # ウィンドウアイコン等の同梱リソース
+        "--collect-all", "customtkinter",    # テーマ JSON 等のデータを含める
         "--hidden-import", "mido",  # MIDI は遅延 import のため明示
         "main.py",
     ]

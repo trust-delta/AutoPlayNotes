@@ -16,8 +16,10 @@ from __future__ import annotations
 import time
 import tkinter as tk
 from dataclasses import dataclass
-from tkinter import ttk
 
+import customtkinter as ctk
+
+from . import theme
 from .keymap import KeyMapping
 from .model import Score
 from .staff import StaffCanvas
@@ -61,11 +63,12 @@ class _Note:
     item: int | None = None
 
 
-class PracticeWindow(tk.Toplevel):
+class PracticeWindow(ctk.CTkToplevel):
     def __init__(self, parent: tk.Widget, score: Score, mapping: KeyMapping, audio=None) -> None:
         super().__init__(parent)
         self.title("練習モード")
         self.resizable(False, False)
+        theme.apply_titlebar(self)
         self.score = score
         self.mapping = mapping
         self.audio = audio
@@ -168,45 +171,69 @@ class PracticeWindow(tk.Toplevel):
 
     # --- UI -------------------------------------------------------------------
     def _build_ui(self) -> None:
-        top = ttk.Frame(self)
-        top.pack(fill="x", padx=10, pady=(8, 0))
-        ttk.Label(top, text="モード:").pack(side="left")
-        ttk.Radiobutton(top, text="リズム", variable=self._mode, value="rhythm",
-                        command=self._on_mode_change).pack(side="left")
-        ttk.Radiobutton(top, text="ステップ（送り）", variable=self._mode, value="step",
-                        command=self._on_mode_change).pack(side="left")
+        top = ctk.CTkFrame(self, fg_color="transparent")
+        top.pack(fill="x", padx=14, pady=(12, 0))
+        ctk.CTkLabel(top, text="モード:").pack(side="left", padx=(0, 8))
+        mode_seg = ctk.CTkSegmentedButton(top, values=["リズム", "ステップ（送り）"],
+                                          command=self._on_mode_select)
+        mode_seg.set("リズム")
+        mode_seg.pack(side="left")
 
-        hud = ttk.Frame(self)
-        hud.pack(fill="x", padx=10, pady=(4, 2))
-        ttk.Label(hud, textvariable=self._score_var, font=("", 13, "bold")).pack(side="left")
-        ttk.Label(hud, textvariable=self._combo_var, font=("", 12), foreground="#ef6c00").pack(side="left", padx=16)
-        ttk.Label(hud, textvariable=self._judge_var, font=("", 13, "bold"), foreground="#1565c0").pack(side="right")
-        ttk.Label(hud, textvariable=self._pos_var, foreground="#888").pack(side="right", padx=12)
+        hud = ctk.CTkFrame(self, fg_color="transparent")
+        hud.pack(fill="x", padx=14, pady=(8, 2))
+        ctk.CTkLabel(hud, textvariable=self._score_var,
+                     font=ctk.CTkFont(size=15, weight="bold")).pack(side="left")
+        ctk.CTkLabel(hud, textvariable=self._combo_var,
+                     font=ctk.CTkFont(size=13),
+                     text_color=theme.pair("note_active")).pack(side="left", padx=16)
+        ctk.CTkLabel(hud, textvariable=self._judge_var,
+                     font=ctk.CTkFont(size=15, weight="bold"),
+                     text_color=theme.pair("accent")).pack(side="right")
+        ctk.CTkLabel(hud, textvariable=self._pos_var,
+                     text_color=theme.pair("subtle")).pack(side="right", padx=12)
 
         self.canvas = tk.Canvas(self, width=_CANVAS_W, height=_CANVAS_H, background="#0f1420",
                                 highlightthickness=0)
-        self.canvas.pack(padx=10, pady=4)
+        self.canvas.pack(padx=14, pady=6)
 
-        controls = ttk.Frame(self)
-        controls.pack(fill="x", padx=10, pady=(2, 4))
-        self._start_btn = ttk.Button(controls, text="▶ スタート (Space)", command=self._start)
+        controls = ctk.CTkFrame(self, fg_color="transparent")
+        controls.pack(fill="x", padx=14, pady=(2, 4))
+        self._start_btn = ctk.CTkButton(controls, text="▶ スタート (Space)", width=150,
+                                        command=self._start, **theme.BTN_ACCENT)
         self._start_btn.pack(side="left")
-        ttk.Button(controls, text="⏪", width=3, command=lambda: self._seek(-self._seek_amt.get())).pack(side="left", padx=(10, 1))
-        ttk.OptionMenu(controls, self._seek_amt, 3.0, 1.0, 3.0, 5.0, 10.0).pack(side="left")
-        ttk.Label(controls, text="秒").pack(side="left")
-        ttk.Button(controls, text="⏩", width=3, command=lambda: self._seek(self._seek_amt.get())).pack(side="left", padx=1)
-        ttk.Label(controls, text="速度:").pack(side="left", padx=(12, 2))
-        ttk.OptionMenu(controls, self._speed, 1.0, 0.5, 0.75, 1.0, 1.25).pack(side="left")
-        ttk.Checkbutton(controls, text="音を鳴らす", variable=self._audio_on).pack(side="left", padx=10)
+        ctk.CTkButton(controls, text="⏪", width=36,
+                      command=lambda: self._seek(-self._seek_amt.get())).pack(side="left", padx=(12, 2))
+        seek_menu = ctk.CTkOptionMenu(controls, width=64, values=["1", "3", "5", "10"],
+                                      command=lambda v: self._seek_amt.set(float(v)))
+        seek_menu.set("3")
+        seek_menu.pack(side="left")
+        ctk.CTkLabel(controls, text="秒").pack(side="left", padx=(4, 0))
+        ctk.CTkButton(controls, text="⏩", width=36,
+                      command=lambda: self._seek(self._seek_amt.get())).pack(side="left", padx=2)
+        ctk.CTkLabel(controls, text="速度:").pack(side="left", padx=(12, 4))
+        speed_menu = ctk.CTkOptionMenu(controls, width=76, values=["0.5", "0.75", "1.0", "1.25"],
+                                       command=lambda v: self._speed.set(float(v)))
+        speed_menu.set("1.0")
+        speed_menu.pack(side="left")
+        ctk.CTkCheckBox(controls, text="音を鳴らす", variable=self._audio_on,
+                        onvalue=True, offvalue=False).pack(side="left", padx=12)
 
-        ttk.Label(self, textvariable=self._instr, foreground="#666").pack(anchor="w", padx=12, pady=(0, 4))
+        ctk.CTkLabel(self, textvariable=self._instr,
+                     text_color=theme.pair("subtle")).pack(anchor="w", padx=16, pady=(0, 4))
 
         # 下部: 実際の五線譜（参照用・編集不可）。再生位置に合わせてカーソルが動く。
-        staff_frame = ttk.LabelFrame(self, text="五線譜")
-        staff_frame.pack(fill="both", expand=True, padx=10, pady=(0, 8))
+        staff_frame = ctk.CTkFrame(self)
+        staff_frame.pack(fill="both", expand=True, padx=14, pady=(0, 12))
+        ctk.CTkLabel(staff_frame, text="五線譜", anchor="w",
+                     font=ctk.CTkFont(size=12, weight="bold"),
+                     text_color=theme.pair("subtle")).pack(fill="x", padx=12, pady=(6, 0))
         self.staff = StaffCanvas(staff_frame, mapping=self.mapping, editable=False, height=200)
-        self.staff.pack(fill="both", expand=True)
+        self.staff.pack(fill="both", expand=True, padx=8, pady=(2, 8))
         self.staff.set_score(self.score)
+
+    def _on_mode_select(self, label: str) -> None:
+        self._mode.set("step" if label.startswith("ステップ") else "rhythm")
+        self._on_mode_change()
 
     def _apply_mode_text(self) -> None:
         if self._mode.get() == "step":

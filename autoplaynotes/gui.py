@@ -1,4 +1,4 @@
-"""tkinter による GUI。"""
+"""customtkinter による GUI。"""
 
 from __future__ import annotations
 
@@ -8,9 +8,12 @@ import threading
 import time
 import tkinter as tk
 from dataclasses import replace
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, messagebox
+
+import customtkinter as ctk
 
 from . import midi_parser, musicxml_parser, ocr, omr, theme
+from .resources import icon_path
 from .audio import AudioPlayer
 from .config import AppConfig
 from .convert import score_to_keys, score_to_numbers, score_to_text
@@ -39,11 +42,36 @@ C C G G A A G:2
 F F E E D D C:2
 """
 
+# 同梱サンプル曲（すべてパブリックドメインの童謡）
+SAMPLES: dict[str, str] = {
+    "きらきら星": SAMPLE_NOTATION,
+    "かえるのうた": """# title: かえるのうた
+# tempo: 120
+# octave: 4
+C D E F E D C R
+E F G A G F E R
+C R C R C R C R
+C:0.5 C:0.5 D:0.5 D:0.5 E:0.5 E:0.5 F:0.5 F:0.5 E D C R
+""",
+    "メリーさんのひつじ": """# title: メリーさんのひつじ
+# tempo: 110
+# octave: 4
+E D C D E E E:2
+D D D:2 E G G:2
+E D C D E E E E
+D D E D C:4
+""",
+}
+
+# 楽譜ソースの内部値と表示ラベル
+_SOURCE_LABELS = {"text": "テキスト記譜", "number": "数字譜", "midi": "MIDI / MusicXML"}
+_LABEL_SOURCES = {v: k for k, v in _SOURCE_LABELS.items()}
+
 
 class App:
-    def __init__(self, root: tk.Tk) -> None:
+    def __init__(self, root: ctk.CTk, config: AppConfig | None = None) -> None:
         self.root = root
-        self.config = AppConfig.load()
+        self.config = config or AppConfig.load()
         self.sender = KeySender()
         self.player = Player(
             self.sender,
@@ -78,11 +106,13 @@ class App:
         self._tempo_var = tk.StringVar(value=f"{self.config.tempo_bpm:g}")
 
         root.title("AutoPlayNotes - 楽譜オートプレイヤー")
-        root.geometry("880x860")
-        root.minsize(780, 700)
+        root.geometry("920x900")
+        root.minsize(820, 740)
+        self._set_window_icon(root)
+        theme.apply_titlebar(root)
 
         self._dark = tk.BooleanVar(value=self.config.dark)
-        theme.apply_theme(root, self.config.dark)
+        theme.apply_menu_defaults(root)
 
         self._build_ui()
         self._apply_tk_palette()
@@ -94,37 +124,63 @@ class App:
         self._log("音は鳴りません。設定した『音階→キー』に従いキー入力のみ送出します。")
         root.protocol("WM_DELETE_WINDOW", self._on_close)
 
+        if self.config.first_run:
+            self.config.first_run = False
+            try:
+                self.config.save()
+            except Exception:
+                pass
+            root.after(300, lambda: WelcomeDialog(root))
+
+    @staticmethod
+    def _set_window_icon(window: tk.Misc) -> None:
+        path = icon_path()
+        if path is None:
+            return
+        try:
+            window.iconbitmap(path)
+        except Exception:
+            pass
+        # CTkToplevel は生成 200ms 後に既定アイコンを設定するため上書きし直す
+        try:
+            window.after(350, lambda: window.iconbitmap(path))
+        except Exception:
+            pass
+
     # --- UI 構築 --------------------------------------------------------------
     def _build_ui(self) -> None:
         # ヘッダ
-        header = ttk.Frame(self.root)
-        header.pack(fill="x", padx=10, pady=(10, 2))
-        titles = ttk.Frame(header)
+        header = ctk.CTkFrame(self.root, fg_color="transparent")
+        header.pack(fill="x", padx=16, pady=(12, 2))
+        titles = ctk.CTkFrame(header, fg_color="transparent")
         titles.pack(side="left")
-        ttk.Label(titles, text="AutoPlayNotes", style="Header.TLabel").pack(anchor="w")
-        ttk.Label(titles, text="楽譜オートプレイヤー ＆ 練習トレーナー", style="Sub.TLabel").pack(anchor="w")
-        self._theme_btn = ttk.Button(header, text="", width=12, command=self._toggle_theme)
-        self._theme_btn.pack(side="right")
-        self._update_theme_btn()
-        ttk.Separator(self.root, orient="horizontal").pack(fill="x", padx=10, pady=(2, 4))
+        ctk.CTkLabel(titles, text="AutoPlayNotes",
+                     font=ctk.CTkFont(size=22, weight="bold")).pack(anchor="w")
+        ctk.CTkLabel(titles, text="楽譜オートプレイヤー ＆ 練習トレーナー",
+                     text_color=theme.pair("subtle")).pack(anchor="w")
+        ctk.CTkSwitch(header, text="🌙 ダーク", variable=self._dark,
+                      onvalue=True, offvalue=False,
+                      command=self._toggle_theme).pack(side="right", pady=8)
 
         # ステータスバー（最下部・タブ外）
-        status_bar = ttk.Frame(self.root)
+        status_bar = ctk.CTkFrame(self.root, corner_radius=0,
+                                  fg_color=theme.pair("surface_alt"))
         status_bar.pack(side="bottom", fill="x")
-        ttk.Label(status_bar, textvariable=self._status_var, style="Status.TLabel",
-                  anchor="w").pack(fill="x")
+        ctk.CTkLabel(status_bar, textvariable=self._status_var, anchor="w",
+                     text_color=theme.pair("subtle")).pack(
+            side="left", fill="x", expand=True, padx=12, pady=2)
+        ctk.CTkLabel(status_bar,
+                     text=f"{self.config.hotkey_start} 開始 ／ {self.config.hotkey_stop} 停止",
+                     text_color=theme.pair("subtle")).pack(side="right", padx=12)
 
         # タブ
-        nb = ttk.Notebook(self.root)
-        nb.pack(fill="both", expand=True, padx=8, pady=(0, 6))
-        tab_play = ttk.Frame(nb)
-        tab_playlist = ttk.Frame(nb)
-        tab_settings = ttk.Frame(nb)
-        tab_log = ttk.Frame(nb)
-        nb.add(tab_play, text="  🎹 演奏  ")
-        nb.add(tab_playlist, text="  🎵 プレイリスト  ")
-        nb.add(tab_settings, text="  ⚙ 設定  ")
-        nb.add(tab_log, text="  📄 ログ  ")
+        tabs = ctk.CTkTabview(self.root, anchor="w", fg_color="transparent")
+        tabs.pack(fill="both", expand=True, padx=12, pady=(0, 4))
+        self._tabs = tabs
+        tab_play = tabs.add("🎹 演奏")
+        tab_playlist = tabs.add("🎵 プレイリスト")
+        tab_settings = tabs.add("⚙ 設定")
+        tab_log = tabs.add("📄 ログ")
 
         self._build_play_tab(tab_play)
         self._build_playlist_tab(tab_playlist)
@@ -133,174 +189,238 @@ class App:
 
         self._update_source()
 
-    def _build_play_tab(self, parent: ttk.Frame) -> None:
+    def _section(self, parent: ctk.CTkFrame, title: str) -> ctk.CTkFrame:
+        """角丸カード + 小見出しのセクション枠を作る。"""
+        box = ctk.CTkFrame(parent)
+        ctk.CTkLabel(box, text=title, anchor="w",
+                     font=ctk.CTkFont(size=12, weight="bold"),
+                     text_color=theme.pair("subtle")).pack(fill="x", padx=14, pady=(8, 0))
+        return box
+
+    def _build_play_tab(self, parent: ctk.CTkFrame) -> None:
         # 楽譜ソースと入力
-        src = ttk.LabelFrame(parent, text="楽譜")
-        src.pack(fill="both", expand=True, padx=8, pady=8)
+        src = self._section(parent, "楽譜")
+        src.pack(fill="both", expand=True, pady=(4, 8))
 
-        radios = ttk.Frame(src)
-        radios.pack(fill="x", padx=4, pady=(6, 2))
-        for text, value in (("テキスト記譜(CDE)", "text"), ("数字譜(1234567)", "number"),
-                            ("MIDI / MusicXML", "midi")):
-            ttk.Radiobutton(radios, text=text, variable=self._source, value=value,
-                            command=self._update_source).pack(side="left", padx=4)
+        row1 = ctk.CTkFrame(src, fg_color="transparent")
+        row1.pack(fill="x", padx=12, pady=(8, 2))
+        self._source_seg = ctk.CTkSegmentedButton(
+            row1, values=list(_SOURCE_LABELS.values()), command=self._on_source_select)
+        self._source_seg.set(_SOURCE_LABELS[self._source.get()])
+        self._source_seg.pack(side="left")
+        self._sample_menu = tk.Menu(self.root, tearoff=0)
+        for name in SAMPLES:
+            self._sample_menu.add_command(
+                label=name, command=lambda n=name: self._load_sample(n))
+        self._sample_btn = ctk.CTkButton(row1, text="🎵 サンプル曲 ▾", width=120,
+                                         command=self._post_sample_menu)
+        self._sample_btn.pack(side="right")
 
-        files = ttk.Frame(src)
-        files.pack(fill="x", padx=4, pady=2)
-        ttk.Button(files, text="テキストを開く...", command=self._open_text).pack(side="left", padx=2)
-        ttk.Button(files, text="テキストを保存...", command=self._save_text).pack(side="left", padx=2)
-        ttk.Button(files, text="MIDI/XML を選択...", command=self._open_midi).pack(side="left", padx=2)
-        ttk.Button(files, text="パート...", command=self._open_midi_tracks).pack(side="left", padx=2)
-        ttk.Label(files, text="ファイル:").pack(side="left", padx=(10, 2))
-        ttk.Label(files, textvariable=self._midi_path, style="Sub.TLabel").pack(side="left")
+        files = ctk.CTkFrame(src, fg_color="transparent")
+        files.pack(fill="x", padx=12, pady=4)
+        ctk.CTkButton(files, text="テキストを開く...", width=120,
+                      command=self._open_text).pack(side="left", padx=(0, 6))
+        ctk.CTkButton(files, text="保存...", width=70,
+                      command=self._save_text).pack(side="left", padx=(0, 6))
+        ctk.CTkButton(files, text="MIDI/XML を選択...", width=140,
+                      command=self._open_midi).pack(side="left", padx=(0, 6))
+        ctk.CTkButton(files, text="パート...", width=80,
+                      command=self._open_midi_tracks).pack(side="left", padx=(0, 6))
+        ctk.CTkLabel(files, text="ファイル:",
+                     text_color=theme.pair("subtle")).pack(side="left", padx=(8, 2))
+        ctk.CTkLabel(files, textvariable=self._midi_path, anchor="w",
+                     text_color=theme.pair("subtle")).pack(side="left")
 
-        tools = ttk.Frame(src)
-        tools.pack(fill="x", padx=4, pady=2)
-        ttk.Button(tools, text="五線譜で表示/編集", command=self._open_staff).pack(side="left", padx=2)
-        ttk.Button(tools, text="🎮 練習モード", command=self._open_practice).pack(side="left", padx=2)
-        ttk.Button(tools, text="エクスポート/変換", command=self._open_export).pack(side="left", padx=2)
-        self._ocr_btn = ttk.Menubutton(tools, text="📷 画像から数字譜")
-        ocr_menu = tk.Menu(self._ocr_btn, tearoff=0)
-        ocr_menu.add_command(label="画像ファイルを開く...", command=self._ocr_from_file)
-        ocr_menu.add_command(label="クリップボードの画像から (Win+Shift+S)",
-                             command=self._ocr_from_clipboard)
-        ocr_menu.add_separator()
-        ocr_menu.add_command(label="五線譜の画像から (OMR・要 oemer)...",
-                             command=self._omr_from_file)
-        self._ocr_btn.configure(menu=ocr_menu)
-        self._ocr_btn.pack(side="left", padx=2)
-        ttk.Button(tools, text="プレビュー", command=self._preview).pack(side="left", padx=2)
+        tools = ctk.CTkFrame(src, fg_color="transparent")
+        tools.pack(fill="x", padx=12, pady=4)
+        self._ocr_menu = tk.Menu(self.root, tearoff=0)
+        self._ocr_menu.add_command(label="数字譜の画像ファイルを開く...", command=self._ocr_from_file)
+        self._ocr_menu.add_command(label="クリップボードの画像から (Win+Shift+S)",
+                                   command=self._ocr_from_clipboard)
+        self._ocr_menu.add_separator()
+        self._ocr_menu.add_command(label="五線譜の画像から (OMR・要 oemer)...",
+                                   command=self._omr_from_file)
+        self._ocr_btn = ctk.CTkButton(tools, text="📷 画像から取り込み ▾", width=160,
+                                      command=self._post_ocr_menu)
+        self._ocr_btn.pack(side="left", padx=(0, 6))
+        ctk.CTkButton(tools, text="五線譜で表示/編集", width=140,
+                      command=self._open_staff).pack(side="left", padx=(0, 6))
+        ctk.CTkButton(tools, text="🎮 練習モード", width=110,
+                      command=self._open_practice).pack(side="left", padx=(0, 6))
+        ctk.CTkButton(tools, text="エクスポート/変換", width=130,
+                      command=self._open_export).pack(side="left", padx=(0, 6))
+        ctk.CTkButton(tools, text="プレビュー", width=90,
+                      command=self._preview).pack(side="left")
 
-        self._notation = tk.Text(src, height=14, wrap="word", font=("Consolas", 11), undo=True)
-        self._notation.pack(fill="both", expand=True, padx=6, pady=6)
+        self._notation = ctk.CTkTextbox(src, wrap="word",
+                                        font=(theme.FONT_MONO, 13), undo=True)
+        self._notation.pack(fill="both", expand=True, padx=12, pady=(6, 12))
         self._notation.insert("1.0", SAMPLE_NOTATION)
 
         # 操作
-        controls = ttk.Frame(parent)
-        controls.pack(fill="x", padx=8, pady=(0, 8))
-        self._start_btn = ttk.Button(
+        controls = ctk.CTkFrame(parent, fg_color="transparent")
+        controls.pack(fill="x", pady=(0, 4))
+        self._start_btn = ctk.CTkButton(
             controls, text=f"▶ 演奏開始 ({self.config.hotkey_start})", command=self._on_start,
-            style="Accent.TButton",
+            width=180, height=36, font=ctk.CTkFont(size=14, weight="bold"),
+            **theme.BTN_ACCENT,
         )
-        self._start_btn.pack(side="left", padx=2)
-        self._stop_btn = ttk.Button(
+        self._start_btn.pack(side="left", padx=(0, 6))
+        self._stop_btn = ctk.CTkButton(
             controls, text=f"■ 停止 ({self.config.hotkey_stop})", command=self._on_stop,
-            state="disabled", style="Danger.TButton",
+            state="disabled", width=130, height=36, **theme.BTN_DANGER,
         )
-        self._stop_btn.pack(side="left", padx=2)
+        self._stop_btn.pack(side="left", padx=(0, 6))
         audio_state = "normal" if self.audio.is_available() else "disabled"
-        ttk.Button(controls, text="🔊 音で試聴", command=self._audio_preview,
-                   state=audio_state).pack(side="left", padx=2)
-        ttk.Button(controls, text="■ 音停止", command=self.audio.stop,
-                   state=audio_state).pack(side="left", padx=2)
+        ctk.CTkButton(controls, text="🔊 音で試聴", width=110, height=36,
+                      command=self._audio_preview, state=audio_state).pack(side="left", padx=(0, 6))
+        ctk.CTkButton(controls, text="■ 音停止", width=90, height=36,
+                      command=self.audio.stop, state=audio_state).pack(side="left")
 
         # テンポ常設（設定タブのテンポと連動）
-        tempo_bar = ttk.Frame(controls)
+        tempo_bar = ctk.CTkFrame(controls, fg_color="transparent")
         tempo_bar.pack(side="right")
-        ttk.Label(tempo_bar, text="テンポ(BPM)").pack(side="left", padx=(0, 4))
-        ttk.Entry(tempo_bar, width=7, textvariable=self._tempo_var).pack(side="left")
+        ctk.CTkLabel(tempo_bar, text="テンポ(BPM)").pack(side="left", padx=(0, 6))
+        ctk.CTkEntry(tempo_bar, width=64, justify="center",
+                     textvariable=self._tempo_var).pack(side="left")
 
-    def _build_playlist_tab(self, parent: ttk.Frame) -> None:
-        pl = ttk.Frame(parent)
-        pl.pack(fill="both", expand=True, padx=8, pady=8)
-        list_row = ttk.Frame(pl)
-        list_row.pack(fill="both", expand=True, padx=2, pady=2)
-        self._pl_list = tk.Listbox(list_row, activestyle="dotbox")
-        pl_scroll = ttk.Scrollbar(list_row, command=self._pl_list.yview)
+    def _on_source_select(self, label: str) -> None:
+        self._source.set(_LABEL_SOURCES.get(label, "text"))
+        self._update_source()
+
+    def _post_sample_menu(self) -> None:
+        self._post_menu(self._sample_btn, self._sample_menu)
+
+    def _post_ocr_menu(self) -> None:
+        self._post_menu(self._ocr_btn, self._ocr_menu)
+
+    @staticmethod
+    def _post_menu(button: ctk.CTkButton, menu: tk.Menu) -> None:
+        menu.tk_popup(button.winfo_rootx(),
+                      button.winfo_rooty() + button.winfo_height() + 2)
+
+    def _load_sample(self, name: str) -> None:
+        self._source.set("text")
+        self._update_source()
+        self._notation.delete("1.0", "end")
+        self._notation.insert("1.0", SAMPLES[name])
+        self._log(f"サンプル曲『{name}』を読み込みました。『🔊 音で試聴』ですぐ確認できます。")
+
+    def _build_playlist_tab(self, parent: ctk.CTkFrame) -> None:
+        pl = self._section(parent, "プレイリスト")
+        pl.pack(fill="both", expand=True, pady=(4, 8))
+        list_row = ctk.CTkFrame(pl, fg_color="transparent")
+        list_row.pack(fill="both", expand=True, padx=12, pady=(8, 2))
+        self._pl_list = tk.Listbox(list_row, activestyle="none")
+        pl_scroll = ctk.CTkScrollbar(list_row, command=self._pl_list.yview)
         self._pl_list.configure(yscrollcommand=pl_scroll.set)
         pl_scroll.pack(side="right", fill="y")
         self._pl_list.pack(side="left", fill="both", expand=True)
         self._pl_list.bind("<Double-Button-1>", lambda e: self._pl_play_selected())
 
-        pl_btns = ttk.Frame(pl)
-        pl_btns.pack(fill="x", padx=2, pady=4)
-        ttk.Button(pl_btns, text="＋現在の楽譜", command=self._pl_add_current).pack(side="left", padx=1)
-        ttk.Button(pl_btns, text="＋ファイル", command=self._pl_add_files).pack(side="left", padx=1)
-        ttk.Button(pl_btns, text="削除", command=self._pl_remove).pack(side="left", padx=1)
-        ttk.Button(pl_btns, text="↑", width=3, command=lambda: self._pl_move(-1)).pack(side="left", padx=1)
-        ttk.Button(pl_btns, text="↓", width=3, command=lambda: self._pl_move(1)).pack(side="left", padx=1)
-        ttk.Button(pl_btns, text="クリア", command=self._pl_clear).pack(side="left", padx=1)
-        ttk.Separator(pl_btns, orient="vertical").pack(side="left", fill="y", padx=6)
-        ttk.Button(pl_btns, text="⏮", width=3, command=lambda: self._goto_relative(-1)).pack(side="left", padx=1)
-        ttk.Button(pl_btns, text="▶ 再生", command=self._pl_play_selected, style="Accent.TButton").pack(side="left", padx=1)
-        ttk.Button(pl_btns, text="⏭", width=3, command=lambda: self._goto_relative(1)).pack(side="left", padx=1)
-        ttk.Checkbutton(pl_btns, text="ループ", variable=self._loop_var).pack(side="left", padx=6)
-        ttk.Button(pl_btns, text="ミニプレイヤー", command=self._open_miniplayer).pack(side="right", padx=2)
+        pl_btns = ctk.CTkFrame(pl, fg_color="transparent")
+        pl_btns.pack(fill="x", padx=12, pady=(6, 12))
+        ctk.CTkButton(pl_btns, text="＋現在の楽譜", width=110,
+                      command=self._pl_add_current).pack(side="left", padx=(0, 4))
+        ctk.CTkButton(pl_btns, text="＋ファイル", width=90,
+                      command=self._pl_add_files).pack(side="left", padx=4)
+        ctk.CTkButton(pl_btns, text="削除", width=60,
+                      command=self._pl_remove).pack(side="left", padx=4)
+        ctk.CTkButton(pl_btns, text="↑", width=36,
+                      command=lambda: self._pl_move(-1)).pack(side="left", padx=4)
+        ctk.CTkButton(pl_btns, text="↓", width=36,
+                      command=lambda: self._pl_move(1)).pack(side="left", padx=4)
+        ctk.CTkButton(pl_btns, text="クリア", width=60,
+                      command=self._pl_clear).pack(side="left", padx=4)
+        ctk.CTkButton(pl_btns, text="⏮", width=36,
+                      command=lambda: self._goto_relative(-1)).pack(side="left", padx=(14, 4))
+        ctk.CTkButton(pl_btns, text="▶ 再生", width=90, command=self._pl_play_selected,
+                      **theme.BTN_ACCENT).pack(side="left", padx=4)
+        ctk.CTkButton(pl_btns, text="⏭", width=36,
+                      command=lambda: self._goto_relative(1)).pack(side="left", padx=4)
+        ctk.CTkSwitch(pl_btns, text="ループ", variable=self._loop_var,
+                      onvalue=True, offvalue=False, width=80).pack(side="left", padx=10)
+        ctk.CTkButton(pl_btns, text="ミニプレイヤー", width=110,
+                      command=self._open_miniplayer).pack(side="right")
         self._refresh_playlist_listbox()
 
-    def _build_settings_tab(self, parent: ttk.Frame) -> None:
-        mapping_box = ttk.LabelFrame(parent, text="キー割り当て")
-        mapping_box.pack(fill="x", padx=8, pady=(8, 4))
-        row = ttk.Frame(mapping_box)
-        row.pack(fill="x", padx=6, pady=6)
-        ttk.Label(row, text="プリセット:").pack(side="left")
-        self._mapping_menu = ttk.OptionMenu(
-            row, self._mapping_var, self.config.active_mapping,
-            *self.config.mapping_names(), command=self._on_mapping_change,
+    def _build_settings_tab(self, parent: ctk.CTkFrame) -> None:
+        mapping_box = self._section(parent, "キー割り当て")
+        mapping_box.pack(fill="x", pady=(4, 8))
+        row = ctk.CTkFrame(mapping_box, fg_color="transparent")
+        row.pack(fill="x", padx=12, pady=(6, 12))
+        ctk.CTkLabel(row, text="プリセット:").pack(side="left")
+        self._mapping_menu = ctk.CTkOptionMenu(
+            row, variable=self._mapping_var, values=self.config.mapping_names(),
+            command=self._on_mapping_change, width=180,
         )
-        self._mapping_menu.pack(side="left", padx=6)
-        ttk.Button(row, text="割り当てを編集...", command=self._edit_mapping).pack(side="left", padx=2)
-        ttk.Button(row, text="割り当てを確認", command=self._show_mapping).pack(side="left", padx=2)
+        self._mapping_menu.pack(side="left", padx=8)
+        ctk.CTkButton(row, text="割り当てを編集...", width=130,
+                      command=self._edit_mapping).pack(side="left", padx=4)
+        ctk.CTkButton(row, text="割り当てを確認", width=120,
+                      command=self._show_mapping).pack(side="left", padx=4)
 
-        params_box = ttk.LabelFrame(parent, text="演奏パラメータ")
-        params_box.pack(fill="x", padx=8, pady=4)
-        params = ttk.Frame(params_box)
-        params.pack(fill="x", padx=6, pady=6)
+        params_box = self._section(parent, "演奏パラメータ")
+        params_box.pack(fill="x", pady=(0, 8))
+        params = ctk.CTkFrame(params_box, fg_color="transparent")
+        params.pack(fill="x", padx=12, pady=(6, 12))
         self._tempo = self._add_field(params, "テンポ(BPM)", self.config.tempo_bpm, 0, var=self._tempo_var)
         self._octave = self._add_field(params, "既定オクターブ", self.config.default_octave, 2)
         self._countin = self._add_field(params, "開始前カウント(秒)", self.config.count_in_seconds, 4)
         self._gate = self._add_field(params, "押下時間(ms)", self.config.gate_ms, 6)
         self._speed = self._add_field(params, "速度倍率", self.config.speed, 8)
 
-        human_box = ttk.LabelFrame(parent, text="自然さ（ヒューマナイズ）")
-        human_box.pack(fill="x", padx=8, pady=4)
-        human = ttk.Frame(human_box)
-        human.pack(fill="x", padx=6, pady=6)
+        human_box = self._section(parent, "自然さ（ヒューマナイズ）")
+        human_box.pack(fill="x", pady=(0, 8))
+        human = ctk.CTkFrame(human_box, fg_color="transparent")
+        human.pack(fill="x", padx=12, pady=(6, 12))
         self._jitter = self._add_field(human, "タイミング揺れ(±ms)", self.config.timing_jitter_ms, 0)
         self._gatejit = self._add_field(human, "音長揺れ(±%)", self.config.gate_jitter_pct, 2)
         self._roll = self._add_field(human, "和音ロール(ms)", self.config.chord_roll_ms, 4)
 
-        ttk.Label(parent, style="Sub.TLabel",
-                  text=(f"ホットキー: {self.config.hotkey_start} 開始 / {self.config.hotkey_stop} 停止"
-                        "（ゲーム画面のままでも操作可）  ｜  テーマは右上のボタンで切替")
-                  ).pack(anchor="w", padx=12, pady=(6, 0))
+        ctk.CTkLabel(parent, text_color=theme.pair("subtle"),
+                     text=(f"ホットキー: {self.config.hotkey_start} 開始 / {self.config.hotkey_stop} 停止"
+                           "（ゲーム画面のままでも操作可）  ｜  外観は右上のスイッチで切替")
+                     ).pack(anchor="w", padx=6, pady=(4, 0))
 
-    def _build_log_tab(self, parent: ttk.Frame) -> None:
-        log_frame = ttk.Frame(parent)
-        log_frame.pack(fill="both", expand=True, padx=8, pady=8)
-        self._log_text = tk.Text(log_frame, wrap="word", state="disabled", font=("Consolas", 10))
-        scroll = ttk.Scrollbar(log_frame, command=self._log_text.yview)
-        self._log_text.configure(yscrollcommand=scroll.set)
-        scroll.pack(side="right", fill="y")
-        self._log_text.pack(side="left", fill="both", expand=True)
+    def _build_log_tab(self, parent: ctk.CTkFrame) -> None:
+        self._log_text = ctk.CTkTextbox(parent, wrap="word", state="disabled",
+                                        font=(theme.FONT_MONO, 12))
+        self._log_text.pack(fill="both", expand=True, pady=(4, 8))
 
     # --- テーマ ---------------------------------------------------------------
     def _apply_tk_palette(self) -> None:
-        """ttk 以外（Text / Listbox）の色をパレットに合わせる。"""
-        theme.style_text(self._notation)
-        theme.style_text(self._log_text, log=True)
+        """customtkinter 対象外（Listbox / tk.Menu）の色をパレットに合わせる。"""
         theme.style_listbox(self._pl_list)
-
-    def _update_theme_btn(self) -> None:
-        self._theme_btn.configure(text=("☀ ライト" if self.config.dark else "🌙 ダーク"))
+        theme.apply_menu_defaults(self.root)
+        p = theme.palette()
+        for menu in (getattr(self, "_ocr_menu", None), getattr(self, "_sample_menu", None)):
+            if menu is not None:
+                menu.configure(bg=p["surface"], fg=p["text"],
+                               activebackground=p["accent"], activeforeground=p["accent_fg"])
 
     def _toggle_theme(self) -> None:
-        self.config.dark = not self.config.dark
-        theme.apply_theme(self.root, self.config.dark)
+        self.config.dark = bool(self._dark.get())
+        theme.set_appearance(self.config.dark)
         self._apply_tk_palette()
-        self._update_theme_btn()
+        theme.apply_titlebar(self.root)
+        if self._staff_window is not None:
+            try:
+                self._staff_window.refresh_theme()
+            except Exception:
+                pass
         try:
             self.config.save()
         except Exception:
             pass
 
-    def _add_field(self, parent: ttk.Frame, label: str, value: object, col: int,
-                   var: tk.StringVar | None = None) -> ttk.Entry:
-        ttk.Label(parent, text=label).grid(row=0, column=col, sticky="e", padx=(8, 2), pady=4)
+    def _add_field(self, parent: ctk.CTkFrame, label: str, value: object, col: int,
+                   var: tk.StringVar | None = None) -> ctk.CTkEntry:
+        ctk.CTkLabel(parent, text=label).grid(row=0, column=col, sticky="e", padx=(14, 4), pady=4)
         if var is not None:
-            entry = ttk.Entry(parent, width=7, textvariable=var)
+            entry = ctk.CTkEntry(parent, width=64, justify="center", textvariable=var)
         else:
-            entry = ttk.Entry(parent, width=7)
+            entry = ctk.CTkEntry(parent, width=64, justify="center")
             entry.insert(0, str(value))
         entry.grid(row=0, column=col + 1, sticky="w", pady=4)
         return entry
@@ -983,16 +1103,7 @@ class App:
             self._log(line)
 
     def _refresh_mapping_menu(self) -> None:
-        menu = self._mapping_menu["menu"]
-        menu.delete(0, "end")
-        for name in self.config.mapping_names():
-            menu.add_command(
-                label=name, command=lambda n=name: self._select_mapping(n)
-            )
-
-    def _select_mapping(self, name: str) -> None:
-        self._mapping_var.set(name)
-        self._on_mapping_change(name)
+        self._mapping_menu.configure(values=self.config.mapping_names())
 
     def _on_mapping_change(self, name: str) -> None:
         self.config.active_mapping = name
@@ -1001,10 +1112,11 @@ class App:
     # --- 状態同期 -------------------------------------------------------------
     def _update_source(self) -> None:
         # テキスト記譜・数字譜はテキスト欄を使う。MIDI のときだけ無効化。
+        self._source_seg.set(_SOURCE_LABELS[self._source.get()])
         use_editor = self._source.get() in ("text", "number")
         self._notation.configure(state="normal" if use_editor else "disabled")
 
-    def _read_float(self, entry: ttk.Entry, default: float) -> float:
+    def _read_float(self, entry: ctk.CTkEntry, default: float) -> float:
         try:
             return float(entry.get().strip())
         except (ValueError, AttributeError):
@@ -1095,50 +1207,56 @@ class App:
         self.root.destroy()
 
 
-class MappingEditor(tk.Toplevel):
+class MappingEditor(ctk.CTkToplevel):
     """『音名 = キー』のテキストで割り当てを編集するダイアログ。"""
 
-    def __init__(self, parent: tk.Tk, mapping: KeyMapping, on_save) -> None:
+    def __init__(self, parent: tk.Misc, mapping: KeyMapping, on_save) -> None:
         super().__init__(parent)
         self.title("キー割り当ての編集")
-        self.geometry("420x520")
+        self.geometry("480x560")
+        theme.apply_titlebar(self)
         self._on_save = on_save
 
-        ttk.Label(
+        ctk.CTkLabel(
             self, text="1 行に 1 つ『音名 = キー』を記入してください（例: C4 = a）。",
-            wraplength=400,
-        ).pack(anchor="w", padx=8, pady=(8, 2))
+            wraplength=440, justify="left",
+        ).pack(anchor="w", padx=14, pady=(12, 4))
 
-        name_row = ttk.Frame(self)
-        name_row.pack(fill="x", padx=8)
-        ttk.Label(name_row, text="名前:").pack(side="left")
-        self._name = ttk.Entry(name_row)
+        name_row = ctk.CTkFrame(self, fg_color="transparent")
+        name_row.pack(fill="x", padx=14)
+        ctk.CTkLabel(name_row, text="名前:").pack(side="left")
+        self._name = ctk.CTkEntry(name_row)
         self._name.insert(0, mapping.name if mapping.name else "カスタム")
-        self._name.pack(side="left", fill="x", expand=True, padx=4)
+        self._name.pack(side="left", fill="x", expand=True, padx=6)
 
-        oor_row = ttk.Frame(self)
-        oor_row.pack(fill="x", padx=8, pady=4)
-        ttk.Label(oor_row, text="音域外の扱い:").pack(side="left")
+        oor_row = ctk.CTkFrame(self, fg_color="transparent")
+        oor_row.pack(fill="x", padx=14, pady=6)
+        ctk.CTkLabel(oor_row, text="音域外の扱い:").pack(side="left")
         self._oor = tk.StringVar(value=mapping.out_of_range)
-        ttk.OptionMenu(
-            oor_row, self._oor, mapping.out_of_range, "transpose", "nearest", "skip"
-        ).pack(side="left", padx=4)
-        ttk.Label(
-            oor_row, text="transpose=移調 / nearest=最寄り音 / skip=無視", foreground="#666"
-        ).pack(side="left")
+        ctk.CTkOptionMenu(oor_row, variable=self._oor, width=120,
+                          values=["transpose", "nearest", "skip"]).pack(side="left", padx=6)
+        ctk.CTkLabel(oor_row, text="transpose=移調 / nearest=最寄り音 / skip=無視",
+                     text_color=theme.pair("subtle")).pack(side="left")
 
-        self._text = tk.Text(self, font=("Consolas", 11), undo=True)
-        theme.style_text(self._text)
-        self._text.pack(fill="both", expand=True, padx=8, pady=4)
+        self._text = ctk.CTkTextbox(self, font=(theme.FONT_MONO, 13), undo=True)
+        self._text.pack(fill="both", expand=True, padx=14, pady=6)
         self._text.insert("1.0", mapping.as_text())
 
-        buttons = ttk.Frame(self)
-        buttons.pack(fill="x", padx=8, pady=8)
-        ttk.Button(buttons, text="保存", command=self._save).pack(side="right", padx=4)
-        ttk.Button(buttons, text="キャンセル", command=self.destroy).pack(side="right")
+        buttons = ctk.CTkFrame(self, fg_color="transparent")
+        buttons.pack(fill="x", padx=14, pady=(4, 14))
+        ctk.CTkButton(buttons, text="保存", width=90, command=self._save,
+                      **theme.BTN_ACCENT).pack(side="right", padx=(6, 0))
+        ctk.CTkButton(buttons, text="キャンセル", width=90,
+                      command=self.destroy).pack(side="right")
 
         self.transient(parent)
-        self.grab_set()
+        self.after(150, self._safe_grab)
+
+    def _safe_grab(self) -> None:
+        try:
+            self.grab_set()
+        except tk.TclError:
+            pass
 
     def _save(self) -> None:
         name = self._name.get().strip() or "カスタム"
@@ -1156,12 +1274,12 @@ class MappingEditor(tk.Toplevel):
         self.destroy()
 
 
-class MidiTrackDialog(tk.Toplevel):
+class MidiTrackDialog(ctk.CTkToplevel):
     """MIDI / MusicXML のどのパートを鳴らすか選ぶダイアログ。"""
 
     def __init__(
         self,
-        parent: tk.Tk,
+        parent: tk.Misc,
         info,  # midi_parser.MidiInfo | musicxml_parser.XmlInfo
         selected: set | None,
         monophonic: bool,
@@ -1170,58 +1288,63 @@ class MidiTrackDialog(tk.Toplevel):
     ) -> None:
         super().__init__(parent)
         self.title("パート選択")
-        self.geometry("560x480")
+        self.geometry("600x520")
+        theme.apply_titlebar(self)
         self._on_ok = on_ok
         self._vars: dict[tuple[int, int], tk.BooleanVar] = {}
 
-        ttk.Label(
+        ctk.CTkLabel(
             self, text="演奏するパートを選んでください（ドラムは通常オフ）。",
-            wraplength=520,
-        ).pack(anchor="w", padx=10, pady=(10, 4))
+            wraplength=560, justify="left",
+        ).pack(anchor="w", padx=14, pady=(12, 4))
 
         # スクロール可能なパート一覧
-        container = ttk.Frame(self)
-        container.pack(fill="both", expand=True, padx=10)
-        canvas = tk.Canvas(container, highlightthickness=0, background=theme.palette()["surface"])
-        scroll = ttk.Scrollbar(container, orient="vertical", command=canvas.yview)
-        inner = ttk.Frame(canvas)
-        inner.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
-        canvas.create_window((0, 0), window=inner, anchor="nw")
-        canvas.configure(yscrollcommand=scroll.set)
-        canvas.pack(side="left", fill="both", expand=True)
-        scroll.pack(side="right", fill="y")
+        inner = ctk.CTkScrollableFrame(self)
+        inner.pack(fill="both", expand=True, padx=14)
 
         if not info.parts:
-            ttk.Label(inner, text="演奏可能なパートがありません。").pack(anchor="w")
+            ctk.CTkLabel(inner, text="演奏可能なパートがありません。").pack(anchor="w")
         for part in info.parts:
             default = (part.key in selected) if selected is not None else (not part.is_drum)
             var = tk.BooleanVar(value=default)
             self._vars[part.key] = var
-            ttk.Checkbutton(inner, text=part.label(), variable=var).pack(anchor="w", pady=1)
+            ctk.CTkCheckBox(inner, text=part.label(), variable=var,
+                            onvalue=True, offvalue=False).pack(anchor="w", pady=3, padx=4)
 
-        options = ttk.Frame(self)
-        options.pack(fill="x", padx=10, pady=6)
+        options = ctk.CTkFrame(self, fg_color="transparent")
+        options.pack(fill="x", padx=14, pady=6)
         self._mono = tk.BooleanVar(value=monophonic)
-        ttk.Checkbutton(
-            options, text="単音化（各時点で最高音だけ＝メロディ抽出）", variable=self._mono
+        ctk.CTkCheckBox(
+            options, text="単音化（各時点で最高音だけ＝メロディ抽出）", variable=self._mono,
+            onvalue=True, offvalue=False,
         ).pack(anchor="w")
-        oct_row = ttk.Frame(options)
-        oct_row.pack(anchor="w", pady=(4, 0))
-        ttk.Label(oct_row, text="オクターブ移調:").pack(side="left")
-        self._octave = ttk.Spinbox(oct_row, from_=-3, to=3, width=4)
-        self._octave.set(str(octave))
-        self._octave.pack(side="left", padx=4)
-        ttk.Label(oct_row, text="（-3〜+3）", foreground="#666").pack(side="left")
+        oct_row = ctk.CTkFrame(options, fg_color="transparent")
+        oct_row.pack(anchor="w", pady=(8, 0))
+        ctk.CTkLabel(oct_row, text="オクターブ移調:").pack(side="left")
+        self._octave = ctk.CTkOptionMenu(
+            oct_row, width=80, values=["+3", "+2", "+1", "0", "-1", "-2", "-3"])
+        self._octave.set(f"{octave:+d}" if octave else "0")
+        self._octave.pack(side="left", padx=6)
 
-        buttons = ttk.Frame(self)
-        buttons.pack(fill="x", padx=10, pady=8)
-        ttk.Button(buttons, text="全選択", command=lambda: self._set_all(True)).pack(side="left")
-        ttk.Button(buttons, text="全解除", command=lambda: self._set_all(False)).pack(side="left", padx=4)
-        ttk.Button(buttons, text="OK", command=self._ok).pack(side="right", padx=4)
-        ttk.Button(buttons, text="キャンセル", command=self.destroy).pack(side="right")
+        buttons = ctk.CTkFrame(self, fg_color="transparent")
+        buttons.pack(fill="x", padx=14, pady=(6, 14))
+        ctk.CTkButton(buttons, text="全選択", width=80,
+                      command=lambda: self._set_all(True)).pack(side="left")
+        ctk.CTkButton(buttons, text="全解除", width=80,
+                      command=lambda: self._set_all(False)).pack(side="left", padx=6)
+        ctk.CTkButton(buttons, text="OK", width=90, command=self._ok,
+                      **theme.BTN_ACCENT).pack(side="right", padx=(6, 0))
+        ctk.CTkButton(buttons, text="キャンセル", width=90,
+                      command=self.destroy).pack(side="right")
 
         self.transient(parent)
-        self.grab_set()
+        self.after(150, self._safe_grab)
+
+    def _safe_grab(self) -> None:
+        try:
+            self.grab_set()
+        except tk.TclError:
+            pass
 
     def _set_all(self, value: bool) -> None:
         for var in self._vars.values():
@@ -1241,14 +1364,15 @@ class MidiTrackDialog(tk.Toplevel):
         self.destroy()
 
 
-class MiniPlayerWindow(tk.Toplevel):
+class MiniPlayerWindow(ctk.CTkToplevel):
     """常に手前に表示される小さな操作パネル（プレイリスト操作用）。"""
 
-    def __init__(self, parent: tk.Tk, on_prev, on_next, on_toggle, on_stop, loop_var: tk.BooleanVar) -> None:
+    def __init__(self, parent: tk.Misc, on_prev, on_next, on_toggle, on_stop, loop_var: tk.BooleanVar) -> None:
         super().__init__(parent)
         self.title("ミニプレイヤー")
-        self.geometry("360x140")
+        self.geometry("380x160")
         self.resizable(False, False)
+        theme.apply_titlebar(self)
         self._on_toggle = on_toggle
 
         self._topmost = tk.BooleanVar(value=True)
@@ -1258,27 +1382,33 @@ class MiniPlayerWindow(tk.Toplevel):
         self._pos_var = tk.StringVar(value="-")
         self._status_var = tk.StringVar(value="待機中")
 
-        ttk.Label(self, textvariable=self._name_var, font=("", 11, "bold")).pack(
-            anchor="w", padx=10, pady=(8, 0)
+        ctk.CTkLabel(self, textvariable=self._name_var, anchor="w",
+                     font=ctk.CTkFont(size=14, weight="bold")).pack(
+            fill="x", padx=14, pady=(10, 0)
         )
-        info = ttk.Frame(self)
-        info.pack(fill="x", padx=10)
-        ttk.Label(info, textvariable=self._pos_var, foreground="#555").pack(side="left")
-        ttk.Label(info, textvariable=self._status_var, foreground="#1565c0").pack(side="right")
+        info = ctk.CTkFrame(self, fg_color="transparent")
+        info.pack(fill="x", padx=14)
+        ctk.CTkLabel(info, textvariable=self._pos_var,
+                     text_color=theme.pair("subtle")).pack(side="left")
+        ctk.CTkLabel(info, textvariable=self._status_var,
+                     text_color=theme.pair("accent")).pack(side="right")
 
-        controls = ttk.Frame(self)
-        controls.pack(pady=6)
-        ttk.Button(controls, text="⏮", width=4, command=on_prev).pack(side="left", padx=3)
-        self._toggle_btn = ttk.Button(controls, text="▶", width=6, command=on_toggle)
+        controls = ctk.CTkFrame(self, fg_color="transparent")
+        controls.pack(pady=8)
+        ctk.CTkButton(controls, text="⏮", width=44, command=on_prev).pack(side="left", padx=3)
+        self._toggle_btn = ctk.CTkButton(controls, text="▶ 再生", width=90,
+                                         command=on_toggle, **theme.BTN_ACCENT)
         self._toggle_btn.pack(side="left", padx=3)
-        ttk.Button(controls, text="■", width=4, command=on_stop).pack(side="left", padx=3)
-        ttk.Button(controls, text="⏭", width=4, command=on_next).pack(side="left", padx=3)
+        ctk.CTkButton(controls, text="■", width=44, command=on_stop).pack(side="left", padx=3)
+        ctk.CTkButton(controls, text="⏭", width=44, command=on_next).pack(side="left", padx=3)
 
-        bottom = ttk.Frame(self)
-        bottom.pack(fill="x", padx=10)
-        ttk.Checkbutton(bottom, text="ループ", variable=loop_var).pack(side="left")
-        ttk.Checkbutton(
-            bottom, text="常に手前", variable=self._topmost, command=self._toggle_topmost
+        bottom = ctk.CTkFrame(self, fg_color="transparent")
+        bottom.pack(fill="x", padx=14, pady=(0, 8))
+        ctk.CTkSwitch(bottom, text="ループ", variable=loop_var,
+                      onvalue=True, offvalue=False, width=80).pack(side="left")
+        ctk.CTkSwitch(
+            bottom, text="常に手前", variable=self._topmost,
+            onvalue=True, offvalue=False, command=self._toggle_topmost,
         ).pack(side="right")
 
     def _toggle_topmost(self) -> None:
@@ -1291,45 +1421,49 @@ class MiniPlayerWindow(tk.Toplevel):
         self._toggle_btn.configure(text="■ 停止" if playing else "▶ 再生")
 
 
-class OcrImportDialog(tk.Toplevel):
+class OcrImportDialog(ctk.CTkToplevel):
     """画像から認識した数字譜を確認・修正して楽譜欄へ反映するダイアログ。"""
 
-    def __init__(self, parent: tk.Tk, image_path: str, raw_text: str,
+    def __init__(self, parent: tk.Misc, image_path: str, raw_text: str,
                  cleaned_text: str, on_apply) -> None:
         super().__init__(parent)
         self.title("画像から数字譜を取り込み")
-        self.geometry("640x680")
+        self.geometry("680x720")
+        theme.apply_titlebar(self)
         self._on_apply = on_apply
         self._photo: tk.PhotoImage | None = self._load_preview(image_path)
         if self._photo is not None:
-            ttk.Label(self, image=self._photo).pack(padx=10, pady=(10, 2))
+            tk.Label(self, image=self._photo, bd=0,
+                     bg=theme.palette()["bg"]).pack(padx=14, pady=(12, 2))
 
-        ttk.Label(self, text="認識した数字譜（ここで修正できます）:").pack(
-            anchor="w", padx=10, pady=(8, 0))
-        self._text = tk.Text(self, wrap="word", font=("Consolas", 11), height=10, undo=True)
-        theme.style_text(self._text)
-        self._text.pack(fill="both", expand=True, padx=10, pady=4)
+        ctk.CTkLabel(self, text="認識した数字譜（ここで修正できます）:").pack(
+            anchor="w", padx=14, pady=(8, 0))
+        self._text = ctk.CTkTextbox(self, wrap="word", font=(theme.FONT_MONO, 13),
+                                    height=200, undo=True)
+        self._text.pack(fill="both", expand=True, padx=14, pady=6)
         self._text.insert("1.0", cleaned_text)
 
-        raw_frame = ttk.LabelFrame(self, text="生の認識結果（参考）")
-        raw_frame.pack(fill="x", padx=10, pady=4)
-        raw_widget = tk.Text(raw_frame, wrap="word", font=("Consolas", 10), height=4)
-        theme.style_text(raw_widget, log=True)
-        raw_widget.pack(fill="x", padx=4, pady=4)
+        ctk.CTkLabel(self, text="生の認識結果（参考）:",
+                     text_color=theme.pair("subtle")).pack(anchor="w", padx=14)
+        raw_widget = ctk.CTkTextbox(self, wrap="word", font=(theme.FONT_MONO, 12),
+                                    height=80, fg_color=theme.pair("log_bg"))
+        raw_widget.pack(fill="x", padx=14, pady=4)
         raw_widget.insert("1.0", raw_text)
         raw_widget.configure(state="disabled")
 
         self._status = tk.StringVar(
             value=f"{len(cleaned_text.split())} トークンを認識。『解析チェック』で確認できます。")
-        ttk.Label(self, textvariable=self._status, style="Sub.TLabel").pack(
-            anchor="w", padx=10)
+        ctk.CTkLabel(self, textvariable=self._status,
+                     text_color=theme.pair("subtle")).pack(anchor="w", padx=14)
 
-        buttons = ttk.Frame(self)
-        buttons.pack(fill="x", padx=10, pady=(4, 10))
-        ttk.Button(buttons, text="解析チェック", command=self._check).pack(side="left")
-        ttk.Button(buttons, text="楽譜欄へ反映", command=self._apply,
-                   style="Accent.TButton").pack(side="left", padx=4)
-        ttk.Button(buttons, text="閉じる", command=self.destroy).pack(side="right")
+        buttons = ctk.CTkFrame(self, fg_color="transparent")
+        buttons.pack(fill="x", padx=14, pady=(6, 14))
+        ctk.CTkButton(buttons, text="解析チェック", width=110,
+                      command=self._check).pack(side="left")
+        ctk.CTkButton(buttons, text="楽譜欄へ反映", width=120, command=self._apply,
+                      **theme.BTN_ACCENT).pack(side="left", padx=6)
+        ctk.CTkButton(buttons, text="閉じる", width=80,
+                      command=self.destroy).pack(side="right")
 
         self.transient(parent)
 
@@ -1358,13 +1492,18 @@ class OcrImportDialog(tk.Toplevel):
         self.destroy()
 
 
-class ExportDialog(tk.Toplevel):
+_EXPORT_LABELS = {"text": "テキスト(CDE)", "number": "数字譜(1-7)", "keys": "キー文字譜(共有用)"}
+_LABEL_EXPORTS = {v: k for k, v in _EXPORT_LABELS.items()}
+
+
+class ExportDialog(ctk.CTkToplevel):
     """楽譜を別形式へ変換 / 共有用にエクスポートするダイアログ。"""
 
-    def __init__(self, parent: tk.Tk, score: Score, mapping: KeyMapping, on_reflect) -> None:
+    def __init__(self, parent: tk.Misc, score: Score, mapping: KeyMapping, on_reflect) -> None:
         super().__init__(parent)
         self.title("エクスポート / 変換")
-        self.geometry("560x520")
+        self.geometry("620x560")
+        theme.apply_titlebar(self)
         self._score = score
         self._mapping = mapping
         self._on_reflect = on_reflect
@@ -1373,34 +1512,43 @@ class ExportDialog(tk.Toplevel):
         self._tonic = tk.StringVar(value="C")
         self._keys_rhythm = tk.BooleanVar(value=True)
 
-        opt = ttk.Frame(self)
-        opt.pack(fill="x", padx=10, pady=(10, 4))
-        ttk.Label(opt, text="出力形式:").pack(side="left")
-        for label, value in (("テキスト(CDE)", "text"), ("数字譜(1-7)", "number"), ("キー文字譜(共有用)", "keys")):
-            ttk.Radiobutton(opt, text=label, variable=self._format, value=value,
-                            command=self._regen).pack(side="left", padx=2)
+        opt = ctk.CTkFrame(self, fg_color="transparent")
+        opt.pack(fill="x", padx=14, pady=(12, 4))
+        ctk.CTkLabel(opt, text="出力形式:").pack(side="left", padx=(0, 8))
+        seg = ctk.CTkSegmentedButton(opt, values=list(_EXPORT_LABELS.values()),
+                                     command=self._on_format_select)
+        seg.set(_EXPORT_LABELS["text"])
+        seg.pack(side="left")
 
-        key_row = ttk.Frame(self)
-        key_row.pack(fill="x", padx=10)
-        ttk.Label(key_row, text="数字譜の主音:").pack(side="left")
-        ttk.OptionMenu(key_row, self._tonic, "C", "C", "G", "D", "A", "E", "F", "Bb", "Eb",
-                       command=lambda _v: self._regen()).pack(side="left", padx=4)
-        ttk.Checkbutton(key_row, text="休符・拍を含める（キー譜の再現用）",
-                        variable=self._keys_rhythm, command=self._regen).pack(side="left", padx=12)
+        key_row = ctk.CTkFrame(self, fg_color="transparent")
+        key_row.pack(fill="x", padx=14, pady=4)
+        ctk.CTkLabel(key_row, text="数字譜の主音:").pack(side="left")
+        ctk.CTkOptionMenu(key_row, variable=self._tonic, width=70,
+                          values=["C", "G", "D", "A", "E", "F", "Bb", "Eb"],
+                          command=lambda _v: self._regen()).pack(side="left", padx=6)
+        ctk.CTkCheckBox(key_row, text="休符・拍を含める（キー譜の再現用）",
+                        variable=self._keys_rhythm, onvalue=True, offvalue=False,
+                        command=self._regen).pack(side="left", padx=12)
 
-        self._text = tk.Text(self, wrap="word", font=("Consolas", 11))
-        theme.style_text(self._text)
-        self._text.pack(fill="both", expand=True, padx=10, pady=6)
+        self._text = ctk.CTkTextbox(self, wrap="word", font=(theme.FONT_MONO, 13))
+        self._text.pack(fill="both", expand=True, padx=14, pady=6)
 
-        buttons = ttk.Frame(self)
-        buttons.pack(fill="x", padx=10, pady=(0, 10))
-        ttk.Button(buttons, text="コピー", command=self._copy).pack(side="left")
-        ttk.Button(buttons, text="保存...", command=self._save).pack(side="left", padx=4)
-        self._reflect_btn = ttk.Button(buttons, text="この形式で楽譜欄に反映", command=self._reflect)
-        self._reflect_btn.pack(side="left", padx=4)
-        ttk.Button(buttons, text="閉じる", command=self.destroy).pack(side="right")
+        buttons = ctk.CTkFrame(self, fg_color="transparent")
+        buttons.pack(fill="x", padx=14, pady=(0, 14))
+        ctk.CTkButton(buttons, text="コピー", width=80, command=self._copy).pack(side="left")
+        ctk.CTkButton(buttons, text="保存...", width=80,
+                      command=self._save).pack(side="left", padx=6)
+        self._reflect_btn = ctk.CTkButton(buttons, text="この形式で楽譜欄に反映", width=170,
+                                          command=self._reflect, **theme.BTN_ACCENT)
+        self._reflect_btn.pack(side="left", padx=6)
+        ctk.CTkButton(buttons, text="閉じる", width=80,
+                      command=self.destroy).pack(side="right")
 
         self.transient(parent)
+        self._regen()
+
+    def _on_format_select(self, label: str) -> None:
+        self._format.set(_LABEL_EXPORTS.get(label, "text"))
         self._regen()
 
     def _current_text(self) -> str:
@@ -1444,7 +1592,70 @@ class ExportDialog(tk.Toplevel):
         self.destroy()
 
 
+class WelcomeDialog(ctk.CTkToplevel):
+    """初回起動時のみ表示するクイックスタート案内。"""
+
+    _STEPS = (
+        ("1", "楽譜を用意する",
+         "テキスト/数字譜を入力するか、MIDI・MusicXML・楽譜画像（OCR/OMR）を"
+         "読み込みます。まずは読み込み済みのサンプル曲のままでOK。"),
+        ("2", "キー割り当てを合わせる",
+         "『⚙ 設定』タブで、演奏先アプリのキー配置に合ったプリセットを選びます。"),
+        ("3", "演奏する",
+         "演奏先アプリを前面にして F9（またはこの画面の『▶ 演奏開始』）。"
+         "音は鳴らさず、キー入力だけを送出します。"),
+    )
+
+    def __init__(self, parent: tk.Misc) -> None:
+        super().__init__(parent)
+        self.title("ようこそ")
+        self.geometry("560x520")
+        self.resizable(False, False)
+        theme.apply_titlebar(self)
+
+        ctk.CTkLabel(self, text="🎹 AutoPlayNotes へようこそ",
+                     font=ctk.CTkFont(size=20, weight="bold")).pack(
+            anchor="w", padx=24, pady=(20, 2))
+        ctk.CTkLabel(self, text="楽譜どおりにキー入力を自動送出する演奏支援ツールです。3 ステップで始められます。",
+                     wraplength=500, justify="left",
+                     text_color=theme.pair("subtle")).pack(anchor="w", padx=24)
+
+        for num, title, desc in self._STEPS:
+            row = ctk.CTkFrame(self)
+            row.pack(fill="x", padx=24, pady=6)
+            ctk.CTkLabel(row, text=num, width=36, height=36, corner_radius=18,
+                         fg_color=theme.pair("accent"),
+                         text_color=theme.pair("accent_fg"),
+                         font=ctk.CTkFont(size=16, weight="bold")).pack(
+                side="left", padx=(12, 12), pady=12)
+            body = ctk.CTkFrame(row, fg_color="transparent")
+            body.pack(side="left", fill="x", expand=True, pady=10, padx=(0, 12))
+            ctk.CTkLabel(body, text=title, anchor="w",
+                         font=ctk.CTkFont(size=14, weight="bold")).pack(fill="x")
+            ctk.CTkLabel(body, text=desc, wraplength=420, justify="left", anchor="w",
+                         text_color=theme.pair("subtle")).pack(fill="x")
+
+        ctk.CTkLabel(self, text="💡『🔊 音で試聴』なら、キー送出せずにスピーカーで曲を確認できます。",
+                     wraplength=500, justify="left",
+                     text_color=theme.pair("subtle")).pack(anchor="w", padx=24, pady=(6, 0))
+        ctk.CTkButton(self, text="はじめる", height=40,
+                      font=ctk.CTkFont(size=14, weight="bold"),
+                      command=self.destroy, **theme.BTN_ACCENT).pack(
+            fill="x", padx=24, pady=(14, 20))
+
+        self.transient(parent)
+        self.after(150, self._safe_grab)
+
+    def _safe_grab(self) -> None:
+        try:
+            self.grab_set()
+        except tk.TclError:
+            pass
+
+
 def run() -> None:
-    root = tk.Tk()
-    App(root)
+    config = AppConfig.load()
+    theme.setup(config.dark)
+    root = ctk.CTk()
+    App(root, config)
     root.mainloop()

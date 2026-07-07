@@ -38,7 +38,9 @@ class AppConfig:
     hotkey_start: str = "F9"
     hotkey_stop: str = "F10"
     loop: bool = False
-    dark: bool = False
+    dark: bool = True
+    # 初回起動時のみようこそ画面を表示する
+    first_run: bool = True
     # ユーザー定義マッピング（プリセットを上書き / 追加）
     custom_mappings: dict[str, dict[str, Any]] = field(default_factory=dict)
     # プレイリスト（PlaylistItem.to_dict のリスト）

@@ -14,7 +14,17 @@ def main() -> int:
     if sys.platform != "win32":
         print("このアプリは Windows 専用です。", file=sys.stderr)
         return 1
-    from autoplaynotes.gui import run
+    try:
+        from autoplaynotes.gui import run
+    except ModuleNotFoundError as exc:
+        if exc.name == "customtkinter":
+            print(
+                "GUI ライブラリが見つかりません。次を実行してください:\n"
+                "    pip install customtkinter",
+                file=sys.stderr,
+            )
+            return 1
+        raise
 
     run()
     return 0
