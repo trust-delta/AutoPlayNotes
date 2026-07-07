@@ -12,7 +12,7 @@ from tkinter import filedialog, messagebox
 
 import customtkinter as ctk
 
-from . import midi_parser, musicxml_parser, ocr, omr, theme
+from . import midi_parser, musicxml_parser, ocr, omr, theme, trace
 from .resources import icon_path
 from .audio import AudioPlayer
 from .config import AppConfig
@@ -238,6 +238,8 @@ class App:
         self._ocr_menu.add_command(label="クリップボードの画像から (Win+Shift+S)",
                                    command=self._ocr_from_clipboard)
         self._ocr_menu.add_separator()
+        self._ocr_menu.add_command(label="楽譜画像をなぞって入力（トレース）...",
+                                   command=self._trace_from_file)
         self._ocr_menu.add_command(label="五線譜の画像から (OMR・要 oemer)...",
                                    command=self._omr_from_file)
         self._ocr_btn = ctk.CTkButton(tools, text="📷 画像から取り込み ▾", width=160,
@@ -958,6 +960,38 @@ class App:
         self._source.set("number")
         self._update_source()
         self._log("認識した数字譜を楽譜欄に反映し、ソースを『数字譜』に切り替えました。")
+
+    # --- 楽譜画像トレース入力 --------------------------------------------------
+    def _trace_from_file(self) -> None:
+        if not trace.is_available():
+            messagebox.showinfo(
+                "利用できません",
+                "画像トレース入力には画像ライブラリ Pillow が必要です。\n"
+                "コマンドプロンプトで\n\n    pip install pillow\n\nを実行してください。",
+            )
+            return
+        path = filedialog.askopenfilename(
+            title="なぞる楽譜画像を開く",
+            filetypes=[("画像", "*.png *.jpg *.jpeg *.bmp *.gif"), ("すべて", "*.*")],
+        )
+        if not path:
+            return
+        try:
+            trace.TraceWindow(self.root, path, on_apply=self._apply_trace, audio=self.audio)
+        except Exception as exc:  # noqa: BLE001
+            messagebox.showerror("画像を開けません", str(exc))
+
+    def _apply_trace(self, score: Score) -> None:
+        from .text_parser import score_to_text
+
+        self._source.set("text")
+        self._update_source()
+        self._notation.delete("1.0", "end")
+        self._notation.insert("1.0", score_to_text(score))
+        self._log(
+            f"画像トレースから {len(score.events)} 音を取り込み、テキスト記譜に反映しました。"
+            "「五線譜で表示/編集」で微調整できます。"
+        )
 
     # --- 五線譜画像の取り込み（OMR） -------------------------------------------
     def _omr_from_file(self) -> None:
