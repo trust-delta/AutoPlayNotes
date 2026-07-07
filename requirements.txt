@@ -1,3 +1,7 @@
 # 必須の追加依存はありません（tkinter / ctypes は標準ライブラリ）。
+# MusicXML 読み込み・数字譜画像の OCR も追加依存なしで動きます。
 # MIDI 読み込みを使う場合のみ以下をインストールしてください:
 mido>=1.3.0
+# 五線譜画像の読み取り（OMR）を使う場合のみ（深層学習モデルを使う重い依存です）。
+# oemer 0.1.8 は最新の numpy/scipy と非互換のためバージョンを合わせること:
+# pip install oemer "numpy<2" "scipy==1.13.*" "opencv-python-headless<4.10"

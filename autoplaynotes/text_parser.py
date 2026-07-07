@@ -19,7 +19,7 @@ from __future__ import annotations
 import re
 
 from .keymap import name_to_midi, note_name
-from .model import NoteEvent, Score
+from .model import NoteEvent, Score, sequential_durations
 
 _HEADER = re.compile(r"^#\s*(\w+)\s*:\s*(.+)$")
 
@@ -114,7 +114,8 @@ def score_to_text(score: Score, per_line: int = 8) -> str:
 
     tokens: list[str] = []
     cursor = 0.0
-    for event in sorted(score.events, key=lambda e: e.start_beat):
+    # 重なった音（複声部由来など）は次の音の開始で切り詰め、発音タイミングを保つ
+    for event, duration in sequential_durations(score.events):
         gap = event.start_beat - cursor
         if gap > 1e-6:
             tokens.append("R" if abs(gap - 1.0) < 1e-9 else f"R:{_fmt(gap)}")
@@ -122,10 +123,10 @@ def score_to_text(score: Score, per_line: int = 8) -> str:
         if event.is_rest:
             continue
         names = "+".join(note_name(n) for n in event.midi_notes)
-        if abs(event.duration_beat - 1.0) > 1e-9:
-            names += f":{_fmt(event.duration_beat)}"
+        if abs(duration - 1.0) > 1e-9:
+            names += f":{_fmt(duration)}"
         tokens.append(names)
-        cursor = event.start_beat + event.duration_beat
+        cursor = event.start_beat + duration
 
     lines = list(header)
     for i in range(0, len(tokens), per_line):

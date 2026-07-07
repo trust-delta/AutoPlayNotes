@@ -1,13 +1,17 @@
 """五線譜のプレビュー & 簡易エディタ（tkinter Canvas）。
 
 - 音高＝縦位置・時間＝横位置で音符を描画（音の長さは右へ伸びる横バー）
-- クリックで音符を追加・選択、選択した音符に対して:
-    ♯ / ♭ / ♮ の付与、音長の変更、半音の上下、時間の移動、削除
+- クリックで音符を追加・選択。ドラッグで矩形選択、Ctrl+クリックで選択に追加/除外
+- 選択した音符（複数可）に一括で:
+    ♯ / ♭ / ♮ の付与、音長の変更、半音・オクターブの上下、時間の移動、削除
+    時間の移動は「以降も一緒に」でリップル移動（後続をまとめてずらす）できる
+- すべての編集は Undo / Redo 可能（Ctrl+Z / Ctrl+Y）
 - 再生中は「演奏済み＝水色」「発音中＝橙」に色が変わり、縦線カーソルが進む
 - クリックモードを「ここから再生」にすると、クリック位置から途中再生できる
 - 「テキストに反映」で編集結果をテキスト記譜へ変換
 
 音高の縦位置は「幹音（白鍵）」基準で決め、# / b は音符左の記号で示す。
+OMR（五線譜画像の認識）等で取り込んだ下書きの修正を想定した作りになっている。
 """
 
 from __future__ import annotations
@@ -107,8 +111,14 @@ class StaffCanvas(ttk.Frame):
         self._items: list[_NoteItem] = []
         self._cursor_id: int | None = None
         self._play_beat: float | None = None
-        self._sel_event: NoteEvent | None = None
-        self._sel_midi: int | None = None
+        self._selection: list[tuple[NoteEvent, int]] = []
+        self._undo_stack: list[list[NoteEvent]] = []
+        self._redo_stack: list[list[NoteEvent]] = []
+        # ドラッグ（矩形選択）の状態
+        self._press_xy: tuple[float, float] | None = None
+        self._press_hit: _NoteItem | None = None
+        self._band_id: int | None = None
+        self._dragging = False
 
         self.canvas = tk.Canvas(self, background="white", height=self._height, highlightthickness=0)
         hbar = ttk.Scrollbar(self, orient="horizontal", command=self.canvas.xview)
@@ -117,7 +127,10 @@ class StaffCanvas(ttk.Frame):
         hbar.pack(side="bottom", fill="x")
 
         if editable:
-            self.canvas.bind("<Button-1>", self._on_left_click)
+            self.canvas.bind("<Button-1>", self._on_press)
+            self.canvas.bind("<Control-Button-1>", self._on_ctrl_click)
+            self.canvas.bind("<B1-Motion>", self._on_drag)
+            self.canvas.bind("<ButtonRelease-1>", self._on_release)
             self.canvas.bind("<Button-3>", self._on_right_click)
 
     # --- 座標変換 -------------------------------------------------------------
@@ -142,8 +155,9 @@ class StaffCanvas(ttk.Frame):
     # --- 楽譜の設定 -----------------------------------------------------------
     def set_score(self, score: Score) -> None:
         self.score = score
-        self._sel_event = None
-        self._sel_midi = None
+        self._selection = []
+        self._undo_stack.clear()
+        self._redo_stack.clear()
         self.redraw()
 
     def get_score(self) -> Score:
@@ -208,7 +222,7 @@ class StaffCanvas(ttk.Frame):
         elif accidental == -1:
             c.create_text(x - _NOTE_RX - 8, y, text="♭", font=("Segoe UI Symbol", 12), fill=color)
 
-        if event is self._sel_event and midi == self._sel_midi:
+        if self._is_selected(event, midi):
             c.create_oval(
                 x - _NOTE_RX - 3, y - _NOTE_RY - 3, x + _NOTE_RX + 3, y + _NOTE_RY + 3,
                 outline=_C_SELECT, width=2,
@@ -260,11 +274,118 @@ class StaffCanvas(ttk.Frame):
                 total = float(region[2]) or 1.0
                 self.canvas.xview_moveto(max(0.0, (self._x(self._play_beat) - 200) / total))
 
-    # --- クリック処理 ---------------------------------------------------------
-    def _on_left_click(self, event: tk.Event) -> None:
+    # --- 選択の管理 -----------------------------------------------------------
+    def _is_selected(self, event: NoteEvent, midi: int) -> bool:
+        return any(e is event and m == midi for e, m in self._selection)
+
+    def _selected_events(self) -> list[NoteEvent]:
+        unique: list[NoteEvent] = []
+        for e, _m in self._selection:
+            if not any(e is u for u in unique):
+                unique.append(e)
+        return unique
+
+    def clear_selection(self) -> None:
+        self._selection = []
+
+    def select_all(self) -> None:
+        self._selection = [(e, m) for e in self.score.events for m in e.midi_notes]
+        self.redraw()
+
+    def has_selection(self) -> bool:
+        return bool(self._selection)
+
+    def selection_count(self) -> int:
+        return len(self._selection)
+
+    # --- 元に戻す / やり直す ----------------------------------------------------
+    def _snapshot(self) -> list[NoteEvent]:
+        return [
+            NoteEvent(e.start_beat, e.duration_beat, tuple(e.midi_notes))
+            for e in self.score.events
+        ]
+
+    def push_undo(self) -> None:
+        """変更を加える直前に呼ぶ。"""
+        self._undo_stack.append(self._snapshot())
+        if len(self._undo_stack) > 200:
+            self._undo_stack.pop(0)
+        self._redo_stack.clear()
+
+    def undo(self) -> None:
+        if not self._undo_stack:
+            return
+        self._redo_stack.append(self._snapshot())
+        self.score.events[:] = self._undo_stack.pop()
+        self.clear_selection()
+        self.redraw()
+
+    def redo(self) -> None:
+        if not self._redo_stack:
+            return
+        self._undo_stack.append(self._snapshot())
+        self.score.events[:] = self._redo_stack.pop()
+        self.clear_selection()
+        self.redraw()
+
+    # --- クリック / ドラッグ処理 -------------------------------------------------
+    def _on_press(self, event: tk.Event) -> None:
         self.canvas.focus_set()
         x = self.canvas.canvasx(event.x)
         y = self.canvas.canvasy(event.y)
+        self._press_xy = (x, y)
+        self._press_hit = self._hit_test(x, y)
+        self._dragging = False
+
+    def _on_ctrl_click(self, event: tk.Event) -> None:
+        """Ctrl+クリック: 選択に追加 / 選択から外す。"""
+        x = self.canvas.canvasx(event.x)
+        y = self.canvas.canvasy(event.y)
+        hit = self._hit_test(x, y)
+        if hit is None:
+            return
+        if self._is_selected(hit.event, hit.midi):
+            self._selection = [
+                (e, m) for e, m in self._selection if not (e is hit.event and m == hit.midi)
+            ]
+        else:
+            self._selection.append((hit.event, hit.midi))
+            self._preview((hit.midi,))
+        self.redraw()
+
+    def _on_drag(self, event: tk.Event) -> None:
+        if self._press_xy is None or self.click_mode == "play":
+            return
+        x = self.canvas.canvasx(event.x)
+        y = self.canvas.canvasy(event.y)
+        if not self._dragging:
+            if abs(x - self._press_xy[0]) < 4 and abs(y - self._press_xy[1]) < 4:
+                return
+            self._dragging = True
+        if self._press_hit is not None:
+            return  # 音符の上からのドラッグは矩形選択にしない（誤操作防止）
+        x0, y0 = self._press_xy
+        if self._band_id is None:
+            self._band_id = self.canvas.create_rectangle(
+                x0, y0, x, y, outline=_C_SELECT, dash=(3, 2)
+            )
+        else:
+            self.canvas.coords(self._band_id, x0, y0, x, y)
+
+    def _on_release(self, event: tk.Event) -> None:
+        if self._press_xy is None:
+            return
+        x = self.canvas.canvasx(event.x)
+        y = self.canvas.canvasy(event.y)
+        x0, y0 = self._press_xy
+        press_hit = self._press_hit
+        dragging = self._dragging
+        self._press_xy = None
+        self._press_hit = None
+        self._dragging = False
+        if self._band_id is not None:
+            self.canvas.delete(self._band_id)
+            self._band_id = None
 
         if self.click_mode == "play":
             beat = self._beat_from_x(x, 0.25)
@@ -272,16 +393,29 @@ class StaffCanvas(ttk.Frame):
                 self.on_play_from(beat)
             return
 
-        hit = self._hit_test(x, y)
-        if hit is not None:
-            self._sel_event, self._sel_midi = hit.event, hit.midi
-            self._preview((hit.midi,))
+        if dragging:
+            if press_hit is None:  # 矩形選択の確定
+                lo_x, hi_x = sorted((x0, x))
+                lo_y, hi_y = sorted((y0, y))
+                self._selection = [
+                    (item.event, item.midi)
+                    for item in self._items
+                    if lo_x <= item.x <= hi_x and lo_y <= item.y <= hi_y
+                ]
+                self.redraw()
+            return
+
+        if press_hit is not None:  # クリック＝単独選択
+            self._selection = [(press_hit.event, press_hit.midi)]
+            self._preview((press_hit.midi,))
             self.redraw()
             return
 
-        beat = self._beat_from_x(x, self.duration)
-        step = self._step_from_y(y)
+        # 空き位置のクリック＝音符の追加
+        beat = self._beat_from_x(x0, self.duration)
+        step = self._step_from_y(y0)
         midi = staff_to_midi(step, self.add_accidental)
+        self.push_undo()
         self._add_note(beat, midi)
         self._preview((midi,))
         self.redraw()
@@ -291,6 +425,7 @@ class StaffCanvas(ttk.Frame):
         y = self.canvas.canvasy(event.y)
         hit = self._hit_test(x, y)
         if hit is not None:
+            self.push_undo()
             self._remove(hit.event, hit.midi)
             self.redraw()
 
@@ -310,67 +445,94 @@ class StaffCanvas(ttk.Frame):
             if not e.is_rest and abs(e.start_beat - beat) < 1e-6:
                 if midi not in e.midi_notes:
                     e.midi_notes = tuple(sorted(set(e.midi_notes) | {midi}))
-                self._sel_event, self._sel_midi = e, midi
+                self._selection = [(e, midi)]
                 return
         new_event = NoteEvent(start_beat=beat, duration_beat=self.duration, midi_notes=(midi,))
         self.score.events.append(new_event)
         self.score.events.sort(key=lambda e: e.start_beat)
-        self._sel_event, self._sel_midi = new_event, midi
+        self._selection = [(new_event, midi)]
 
     def _remove(self, event: NoteEvent, midi: int) -> None:
         remaining = tuple(n for n in event.midi_notes if n != midi)
         if remaining:
             event.midi_notes = remaining
-        elif event in self.score.events:
-            self.score.events.remove(event)
-        if event is self._sel_event and midi == self._sel_midi:
-            self._sel_event = None
-            self._sel_midi = None
+        else:
+            # 同値の別イベントを消さないよう、同一性で取り除く
+            self.score.events[:] = [e for e in self.score.events if e is not event]
+        self._selection = [
+            (e, m) for e, m in self._selection if not (e is event and m == midi)
+        ]
 
-    def _replace_selected_midi(self, new_midi: int) -> None:
-        e = self._sel_event
-        if e is None or self._sel_midi is None:
-            return
-        notes = set(e.midi_notes)
-        notes.discard(self._sel_midi)
-        notes.add(new_midi)
-        e.midi_notes = tuple(sorted(notes))
-        self._sel_midi = new_midi
-        self._preview((new_midi,))
+    def _transform_selection(self, fn: Callable[[int], int]) -> None:
+        """選択中の全音符の音高を fn で変換する（呼び出し側で push_undo 済み）。"""
+        new_selection: list[tuple[NoteEvent, int]] = []
+        for event, midi in self._selection:
+            new_midi = max(0, min(127, fn(midi)))
+            notes = set(event.midi_notes)
+            notes.discard(midi)
+            notes.add(new_midi)
+            event.midi_notes = tuple(sorted(notes))
+            new_selection.append((event, new_midi))
+        self._selection = new_selection
+        if len(new_selection) == 1:
+            self._preview((new_selection[0][1],))
         self.redraw()
 
-    # 以下はツールバー / キーから呼ばれる公開操作
+    # 以下はツールバー / キーから呼ばれる公開操作（複数選択に一括適用）
     def set_selected_accidental(self, accidental: int) -> None:
-        if self._sel_midi is None:
+        if not self._selection:
             return
-        step, _ = midi_to_staff(self._sel_midi)
-        self._replace_selected_midi(staff_to_midi(step, accidental))
+        self.push_undo()
+        self._transform_selection(
+            lambda midi: staff_to_midi(midi_to_staff(midi)[0], accidental)
+        )
 
     def nudge_selected_semitone(self, delta: int) -> None:
-        if self._sel_midi is None:
+        if not self._selection:
             return
-        self._replace_selected_midi(max(0, min(127, self._sel_midi + delta)))
+        self.push_undo()
+        self._transform_selection(lambda midi: midi + delta)
 
-    def move_selected_time(self, delta_beats: float) -> None:
-        e = self._sel_event
-        if e is None:
+    def nudge_selected_octave(self, delta: int) -> None:
+        self.nudge_selected_semitone(12 * delta)
+
+    def move_selected_time(self, delta_beats: float, ripple: bool = False) -> None:
+        """選択音符の時間移動。ripple=True なら選択位置以降の音符もまとめて動かす。"""
+        events = self._selected_events()
+        if not events:
             return
-        e.start_beat = max(0.0, e.start_beat + delta_beats)
+        if ripple:
+            threshold = min(e.start_beat for e in events)
+            targets = [e for e in self.score.events if e.start_beat >= threshold - 1e-9]
+        else:
+            targets = events
+        shift = delta_beats
+        if shift < 0:
+            shift = max(shift, -min(e.start_beat for e in targets))
+        if shift == 0:
+            return
+        self.push_undo()
+        for e in targets:
+            e.start_beat += shift
         self.score.events.sort(key=lambda ev: ev.start_beat)
         self.redraw()
 
     def apply_duration_to_selected(self) -> None:
-        if self._sel_event is not None:
-            self._sel_event.duration_beat = self.duration
-            self.redraw()
+        events = self._selected_events()
+        if not events:
+            return
+        self.push_undo()
+        for e in events:
+            e.duration_beat = self.duration
+        self.redraw()
 
     def delete_selected(self) -> None:
-        if self._sel_event is not None and self._sel_midi is not None:
-            self._remove(self._sel_event, self._sel_midi)
-            self.redraw()
-
-    def has_selection(self) -> bool:
-        return self._sel_event is not None and self._sel_midi is not None
+        if not self._selection:
+            return
+        self.push_undo()
+        for event, midi in list(self._selection):
+            self._remove(event, midi)
+        self.redraw()
 
 
 _DURATIONS = {
@@ -397,7 +559,7 @@ class StaffWindow(tk.Toplevel):
     ) -> None:
         super().__init__(parent)
         self.title("五線譜プレビュー / 編集")
-        self.geometry("960x460")
+        self.geometry("1080x480")
         self._on_reflect = on_reflect
         self._on_play = on_play
         self._audio = audio
@@ -448,7 +610,9 @@ class StaffWindow(tk.Toplevel):
         # --- ツールバー 2 行目: 選択中の音符への操作 ---
         bar2 = ttk.Frame(self)
         bar2.pack(fill="x", padx=6, pady=(0, 2))
-        ttk.Label(bar2, text="選択中の音符:").pack(side="left")
+        ttk.Button(bar2, text="↶", width=3, command=self.staff.undo).pack(side="left", padx=1)
+        ttk.Button(bar2, text="↷", width=3, command=self.staff.redo).pack(side="left", padx=(1, 8))
+        ttk.Label(bar2, text="選択中:").pack(side="left")
         ttk.Button(bar2, text="♯", width=3,
                    command=lambda: self.staff.set_selected_accidental(1)).pack(side="left", padx=1)
         ttk.Button(bar2, text="♭", width=3,
@@ -457,8 +621,14 @@ class StaffWindow(tk.Toplevel):
                    command=lambda: self.staff.set_selected_accidental(0)).pack(side="left", padx=1)
         ttk.Button(bar2, text="半音▲", command=lambda: self.staff.nudge_selected_semitone(1)).pack(side="left", padx=1)
         ttk.Button(bar2, text="半音▼", command=lambda: self.staff.nudge_selected_semitone(-1)).pack(side="left", padx=1)
-        ttk.Button(bar2, text="◀", width=3, command=lambda: self.staff.move_selected_time(-self.staff.duration)).pack(side="left", padx=1)
-        ttk.Button(bar2, text="▶", width=3, command=lambda: self.staff.move_selected_time(self.staff.duration)).pack(side="left", padx=1)
+        ttk.Button(bar2, text="8va▲", width=5,
+                   command=lambda: self.staff.nudge_selected_octave(1)).pack(side="left", padx=1)
+        ttk.Button(bar2, text="8vb▼", width=5,
+                   command=lambda: self.staff.nudge_selected_octave(-1)).pack(side="left", padx=1)
+        self._ripple = tk.BooleanVar(value=False)
+        ttk.Button(bar2, text="◀", width=3, command=lambda: self._move_time(-1)).pack(side="left", padx=(6, 1))
+        ttk.Button(bar2, text="▶", width=3, command=lambda: self._move_time(1)).pack(side="left", padx=1)
+        ttk.Checkbutton(bar2, text="以降も一緒に", variable=self._ripple).pack(side="left", padx=2)
         ttk.Button(bar2, text="長さを適用", command=self.staff.apply_duration_to_selected).pack(side="left", padx=4)
         ttk.Button(bar2, text="削除", command=self.staff.delete_selected).pack(side="left", padx=1)
 
@@ -466,7 +636,9 @@ class StaffWindow(tk.Toplevel):
         ttk.Button(bar2, text="全消去", command=self._clear).pack(side="right", padx=4)
 
         ttk.Label(
-            self, text="左クリック=追加/選択  右クリック=削除  ｜  矢印キー=選択音の移動  Delete=削除",
+            self,
+            text="クリック=追加/選択  ドラッグ=まとめて選択  Ctrl+クリック=選択に追加  右クリック=削除"
+                 "  ｜  矢印キー=移動  Delete=削除  Ctrl+Z/Y=元に戻す/やり直す  Ctrl+A=全選択",
             foreground="#666",
         ).pack(anchor="w", padx=8)
 
@@ -476,10 +648,16 @@ class StaffWindow(tk.Toplevel):
         # キーボードショートカット（選択中の音符を操作）
         self.bind("<Up>", lambda e: self.staff.nudge_selected_semitone(1))
         self.bind("<Down>", lambda e: self.staff.nudge_selected_semitone(-1))
-        self.bind("<Left>", lambda e: self.staff.move_selected_time(-self.staff.duration))
-        self.bind("<Right>", lambda e: self.staff.move_selected_time(self.staff.duration))
+        self.bind("<Left>", lambda e: self._move_time(-1))
+        self.bind("<Right>", lambda e: self._move_time(1))
         self.bind("<Delete>", lambda e: self.staff.delete_selected())
         self.bind("<BackSpace>", lambda e: self.staff.delete_selected())
+        self.bind("<Control-z>", lambda e: self.staff.undo())
+        self.bind("<Control-y>", lambda e: self.staff.redo())
+        self.bind("<Control-a>", lambda e: self.staff.select_all())
+
+    def _move_time(self, direction: int) -> None:
+        self.staff.move_selected_time(direction * self.staff.duration, ripple=self._ripple.get())
 
     def _on_dur_change(self, label: str) -> None:
         self.staff.duration = _DURATIONS.get(label, 1.0)
@@ -544,9 +722,9 @@ class StaffWindow(tk.Toplevel):
         self._on_reflect(score_to_text(self.staff.get_score()))
 
     def _clear(self) -> None:
+        self.staff.push_undo()
         self.staff.get_score().events.clear()
-        self.staff._sel_event = None
-        self.staff._sel_midi = None
+        self.staff.clear_selection()
         self.staff.redraw()
 
     def set_cursor(self, beat: float) -> None:

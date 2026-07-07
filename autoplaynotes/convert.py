@@ -10,7 +10,7 @@
 from __future__ import annotations
 
 from .keymap import KeyMapping, PITCH_CLASS
-from .model import Score
+from .model import Score, sequential_durations
 from .text_parser import score_to_text  # 再輸出
 
 __all__ = ["score_to_text", "score_to_numbers", "score_to_keys"]
@@ -49,7 +49,8 @@ def score_to_numbers(score: Score, tonic: str = "C", base_octave: int = 4, per_l
 
     tokens: list[str] = []
     cursor = 0.0
-    for event in sorted(score.events, key=lambda e: e.start_beat):
+    # 重なった音（複声部由来など）は次の音の開始で切り詰め、発音タイミングを保つ
+    for event, duration in sequential_durations(score.events):
         gap = event.start_beat - cursor
         if gap > 1e-6:
             tokens.append("0" if abs(gap - 1.0) < 1e-9 else f"0:{_fmt(gap)}")
@@ -64,10 +65,10 @@ def score_to_numbers(score: Score, tonic: str = "C", base_octave: int = 4, per_l
             marks = "'" * octave if octave > 0 else "," * (-octave)
             parts.append(f"{acc}{digit}{marks}")
         token = "+".join(parts)
-        if abs(event.duration_beat - 1.0) > 1e-9:
-            token += f":{_fmt(event.duration_beat)}"
+        if abs(duration - 1.0) > 1e-9:
+            token += f":{_fmt(duration)}"
         tokens.append(token)
-        cursor = event.start_beat + event.duration_beat
+        cursor = event.start_beat + duration
 
     lines = list(header)
     for i in range(0, len(tokens), per_line):
@@ -118,7 +119,8 @@ def score_to_keys(
         items: list[tuple[float, str]] = []  # (拍位置, トークン)
         cursor = 0.0
         skipped = 0
-        for event in sorted(score.events, key=lambda e: e.start_beat):
+        # 重なった音（複声部由来など）は次の音の開始で切り詰め、発音タイミングを保つ
+        for event, dur in sequential_durations(score.events):
             gap = event.start_beat - cursor
             if gap > 1e-6:
                 items.append((cursor, "_" if abs(gap - 1.0) < 1e-9 else f"_:{_fmt(gap)}"))
@@ -127,7 +129,6 @@ def score_to_keys(
                 continue
             keys, sk = _event_keys(event, mapping)
             skipped += sk
-            dur = event.duration_beat
             if not keys:  # 割り当て無し → タイミング維持のため休符に
                 items.append((event.start_beat, "_" if abs(dur - 1.0) < 1e-9 else f"_:{_fmt(dur)}"))
             else:

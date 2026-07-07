@@ -5,11 +5,12 @@ from __future__ import annotations
 import os
 import tempfile
 import threading
+import time
 import tkinter as tk
 from dataclasses import replace
 from tkinter import filedialog, messagebox, ttk
 
-from . import midi_parser, ocr, theme
+from . import midi_parser, musicxml_parser, ocr, omr, theme
 from .audio import AudioPlayer
 from .config import AppConfig
 from .convert import score_to_keys, score_to_numbers, score_to_text
@@ -70,6 +71,7 @@ class App:
         self._midi_selection: set[tuple[int, int]] | None = None
         self._midi_mono = False
         self._midi_octave = 0
+        self._omr_last_progress = 0.0
         self._mapping_var = tk.StringVar(value=self.config.active_mapping)
         self._status_var = tk.StringVar(value="待機中")
         self._loop_var = tk.BooleanVar(value=self.config.loop)
@@ -139,7 +141,7 @@ class App:
         radios = ttk.Frame(src)
         radios.pack(fill="x", padx=4, pady=(6, 2))
         for text, value in (("テキスト記譜(CDE)", "text"), ("数字譜(1234567)", "number"),
-                            ("MIDI ファイル", "midi")):
+                            ("MIDI / MusicXML", "midi")):
             ttk.Radiobutton(radios, text=text, variable=self._source, value=value,
                             command=self._update_source).pack(side="left", padx=4)
 
@@ -147,9 +149,9 @@ class App:
         files.pack(fill="x", padx=4, pady=2)
         ttk.Button(files, text="テキストを開く...", command=self._open_text).pack(side="left", padx=2)
         ttk.Button(files, text="テキストを保存...", command=self._save_text).pack(side="left", padx=2)
-        ttk.Button(files, text="MIDI を選択...", command=self._open_midi).pack(side="left", padx=2)
-        ttk.Button(files, text="トラック...", command=self._open_midi_tracks).pack(side="left", padx=2)
-        ttk.Label(files, text="MIDI:").pack(side="left", padx=(10, 2))
+        ttk.Button(files, text="MIDI/XML を選択...", command=self._open_midi).pack(side="left", padx=2)
+        ttk.Button(files, text="パート...", command=self._open_midi_tracks).pack(side="left", padx=2)
+        ttk.Label(files, text="ファイル:").pack(side="left", padx=(10, 2))
         ttk.Label(files, textvariable=self._midi_path, style="Sub.TLabel").pack(side="left")
 
         tools = ttk.Frame(src)
@@ -162,6 +164,9 @@ class App:
         ocr_menu.add_command(label="画像ファイルを開く...", command=self._ocr_from_file)
         ocr_menu.add_command(label="クリップボードの画像から (Win+Shift+S)",
                              command=self._ocr_from_clipboard)
+        ocr_menu.add_separator()
+        ocr_menu.add_command(label="五線譜の画像から (OMR・要 oemer)...",
+                             command=self._omr_from_file)
         self._ocr_btn.configure(menu=ocr_menu)
         self._ocr_btn.pack(side="left", padx=2)
         ttk.Button(tools, text="プレビュー", command=self._preview).pack(side="left", padx=2)
@@ -325,9 +330,11 @@ class App:
             if source == "midi":
                 path = self._midi_path.get().strip()
                 if not path:
-                    messagebox.showwarning("MIDI 未選択", "MIDI ファイルを選択してください。")
+                    messagebox.showwarning("ファイル未選択", "MIDI / MusicXML ファイルを選択してください。")
                     return None
-                return midi_parser.build_score(
+                build = (musicxml_parser.build_score
+                         if musicxml_parser.is_musicxml_path(path) else midi_parser.build_score)
+                return build(
                     path,
                     selected_keys=self._midi_selection,
                     monophonic=self._midi_mono,
@@ -466,14 +473,15 @@ class App:
     def _pl_add_files(self) -> None:
         paths = filedialog.askopenfilenames(
             title="プレイリストに追加",
-            filetypes=[("楽譜/MIDI", "*.txt *.mid *.midi"), ("テキスト", "*.txt"),
-                       ("MIDI", "*.mid *.midi"), ("すべて", "*.*")],
+            filetypes=[("楽譜/MIDI/MusicXML", "*.txt *.mid *.midi *.musicxml *.xml *.mxl"),
+                       ("テキスト", "*.txt"), ("MIDI", "*.mid *.midi"),
+                       ("MusicXML", "*.musicxml *.xml *.mxl"), ("すべて", "*.*")],
         )
         for path in paths:
             ext = os.path.splitext(path)[1].lower()
             name = os.path.splitext(os.path.basename(path))[0]
-            if ext in (".mid", ".midi"):
-                if not midi_parser.is_available():
+            if ext in (".mid", ".midi") or musicxml_parser.is_musicxml_path(path):
+                if ext in (".mid", ".midi") and not midi_parser.is_available():
                     messagebox.showinfo("mido が必要です", "MIDI には 'pip install mido' が必要です。")
                     continue
                 self.playlist.add(PlaylistItem(name=name, kind="midi", midi_path=path))
@@ -831,40 +839,102 @@ class App:
         self._update_source()
         self._log("認識した数字譜を楽譜欄に反映し、ソースを『数字譜』に切り替えました。")
 
+    # --- 五線譜画像の取り込み（OMR） -------------------------------------------
+    def _omr_from_file(self) -> None:
+        if not omr.is_available():
+            messagebox.showinfo(
+                "oemer が必要です",
+                "五線譜画像の読み取りには外部ツール oemer (MIT License) が必要です。\n"
+                "Python 環境で\n\n    pip install oemer\n\n"
+                "を実行してください（初回の認識時にモデルを自動取得します）。",
+            )
+            return
+        path = filedialog.askopenfilename(
+            title="五線譜の画像を開く",
+            filetypes=[("画像", "*.png *.jpg *.jpeg *.bmp"), ("すべて", "*.*")],
+        )
+        if not path:
+            return
+        if not messagebox.askokcancel(
+            "五線譜の認識",
+            "五線譜の認識には数分かかることがあります（その間 CPU 使用率が上がります）。\n"
+            "結果は下書き品質です。取り込み後に五線譜エディタで修正してください。\n\n"
+            "認識結果の MusicXML は画像と同じフォルダに保存されます。開始しますか？",
+        ):
+            return
+
+        def work() -> None:
+            try:
+                xml_path = omr.transcribe(path, on_progress=self._omr_progress_threadsafe)
+            except omr.OmrError as exc:
+                self._ocr_failed_threadsafe(str(exc))
+                return
+            self.root.after(0, lambda: self._omr_done(xml_path))
+
+        self._ocr_begin(work)
+
+    def _omr_progress_threadsafe(self, line: str) -> None:
+        # oemer のログは非常に高頻度（モデル DL 中は毎行）なので間引く
+        now = time.monotonic()
+        if now - self._omr_last_progress < 0.2:
+            return
+        self._omr_last_progress = now
+        text = line[-60:]
+        self.root.after(0, lambda: self._set_status(f"五線譜を認識中... {text}"))
+
+    def _omr_done(self, xml_path: str) -> None:
+        self._ocr_btn.configure(state="normal")
+        self._set_status("五線譜の認識が完了しました")
+        self._log(f"五線譜画像を MusicXML 化: {os.path.basename(xml_path)}（画像と同じフォルダに保存）")
+        self._load_score_file(xml_path)
+
     def _open_midi(self) -> None:
-        if not midi_parser.is_available():
+        path = filedialog.askopenfilename(
+            title="MIDI / MusicXML ファイルを開く",
+            filetypes=[("MIDI / MusicXML", "*.mid *.midi *.musicxml *.xml *.mxl"),
+                       ("MIDI", "*.mid *.midi"),
+                       ("MusicXML", "*.musicxml *.xml *.mxl"),
+                       ("すべて", "*.*")],
+        )
+        if not path:
+            return
+        self._load_score_file(path)
+
+    def _load_score_file(self, path: str) -> None:
+        """MIDI / MusicXML ファイルを読み込み、パート選択ダイアログを開く。"""
+        if not musicxml_parser.is_musicxml_path(path) and not midi_parser.is_available():
             messagebox.showinfo(
                 "mido が必要です",
                 "MIDI 読み込みには mido が必要です。\nコマンドプロンプトで\n\n    pip install mido\n\nを実行してください。",
             )
             return
-        path = filedialog.askopenfilename(
-            title="MIDI ファイルを開く",
-            filetypes=[("MIDI", "*.mid *.midi"), ("すべて", "*.*")],
-        )
-        if not path:
-            return
         try:
-            info = midi_parser.inspect_midi(path)
+            info = self._inspect_score_file(path)
         except Exception as exc:
-            messagebox.showerror("MIDI 解析エラー", str(exc))
+            messagebox.showerror("楽譜ファイルの解析エラー", str(exc))
             return
         self._midi_path.set(path)
         self._midi_info = info
-        # 既定選択: ドラム以外を全て
+        # 既定選択: ドラム/打楽器以外を全て
         self._midi_selection = {p.key for p in info.parts if not p.is_drum}
         self._midi_mono = False
         self._midi_octave = 0
         self._source.set("midi")
         self._update_source()
         self._log(
-            f"MIDI を選択: {info.title} / パート数 {len(info.parts)} / {info.tempo_bpm:.0f} BPM"
+            f"楽譜ファイルを選択: {info.title} / パート数 {len(info.parts)} / {info.tempo_bpm:.0f} BPM"
         )
         self._open_midi_tracks()
 
+    @staticmethod
+    def _inspect_score_file(path: str):
+        if musicxml_parser.is_musicxml_path(path):
+            return musicxml_parser.inspect_musicxml(path)
+        return midi_parser.inspect_midi(path)
+
     def _open_midi_tracks(self) -> None:
         if not self._midi_path.get().strip():
-            messagebox.showinfo("MIDI 未選択", "先に「MIDI を選択...」で読み込んでください。")
+            messagebox.showinfo("ファイル未選択", "先に「MIDI/XML を選択...」で読み込んでください。")
             return
         info = self._midi_info
         if info is None:
@@ -1087,19 +1157,19 @@ class MappingEditor(tk.Toplevel):
 
 
 class MidiTrackDialog(tk.Toplevel):
-    """MIDI のどのパートを鳴らすか選ぶダイアログ。"""
+    """MIDI / MusicXML のどのパートを鳴らすか選ぶダイアログ。"""
 
     def __init__(
         self,
         parent: tk.Tk,
-        info,  # midi_parser.MidiInfo
+        info,  # midi_parser.MidiInfo | musicxml_parser.XmlInfo
         selected: set | None,
         monophonic: bool,
         octave: int,
         on_ok,
     ) -> None:
         super().__init__(parent)
-        self.title("MIDI トラック選択")
+        self.title("パート選択")
         self.geometry("560x480")
         self._on_ok = on_ok
         self._vars: dict[tuple[int, int], tk.BooleanVar] = {}

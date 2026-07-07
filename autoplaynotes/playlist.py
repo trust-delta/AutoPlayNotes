@@ -1,6 +1,6 @@
 """プレイリスト（連続再生）のデータモデル。
 
-各項目は「楽譜のソース（テキスト/数字譜/MIDI）＋パラメータ」を保持し、
+各項目は「楽譜のソース（テキスト/数字譜/MIDI/MusicXML）＋パラメータ」を保持し、
 再生時に build_score() で Score を生成する。設定ファイルへ保存できるよう
 to_dict / from_dict も提供する。
 """
@@ -10,7 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from . import midi_parser
+from . import midi_parser, musicxml_parser
 from .model import Score
 from .number_parser import parse_numbers
 from .text_parser import parse_text
@@ -19,7 +19,7 @@ from .text_parser import parse_text
 @dataclass
 class PlaylistItem:
     name: str
-    kind: str  # "text" | "number" | "midi"
+    kind: str  # "text" | "number" | "midi"（MusicXML も拡張子で判別し "midi" 扱い）
     text: str = ""
     midi_path: str = ""
     midi_selection: list[tuple[int, int]] | None = None
@@ -32,7 +32,10 @@ class PlaylistItem:
     def build_score(self) -> Score:
         if self.kind == "midi":
             selected = set(self.midi_selection) if self.midi_selection else None
-            return midi_parser.build_score(
+            build = (musicxml_parser.build_score
+                     if musicxml_parser.is_musicxml_path(self.midi_path)
+                     else midi_parser.build_score)
+            return build(
                 self.midi_path,
                 selected_keys=selected,
                 monophonic=self.midi_mono,
