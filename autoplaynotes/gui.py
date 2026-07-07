@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import os
+import tempfile
+import threading
 import tkinter as tk
 from dataclasses import replace
 from tkinter import filedialog, messagebox, ttk
 
-from . import midi_parser, theme
+from . import midi_parser, ocr, theme
 from .audio import AudioPlayer
 from .config import AppConfig
 from .convert import score_to_keys, score_to_numbers, score_to_text
@@ -155,6 +157,13 @@ class App:
         ttk.Button(tools, text="五線譜で表示/編集", command=self._open_staff).pack(side="left", padx=2)
         ttk.Button(tools, text="🎮 練習モード", command=self._open_practice).pack(side="left", padx=2)
         ttk.Button(tools, text="エクスポート/変換", command=self._open_export).pack(side="left", padx=2)
+        self._ocr_btn = ttk.Menubutton(tools, text="📷 画像から数字譜")
+        ocr_menu = tk.Menu(self._ocr_btn, tearoff=0)
+        ocr_menu.add_command(label="画像ファイルを開く...", command=self._ocr_from_file)
+        ocr_menu.add_command(label="クリップボードの画像から (Win+Shift+S)",
+                             command=self._ocr_from_clipboard)
+        self._ocr_btn.configure(menu=ocr_menu)
+        self._ocr_btn.pack(side="left", padx=2)
         ttk.Button(tools, text="プレビュー", command=self._preview).pack(side="left", padx=2)
 
         self._notation = tk.Text(src, height=14, wrap="word", font=("Consolas", 11), undo=True)
@@ -734,6 +743,94 @@ class App:
             return
         self._log(f"保存しました: {os.path.basename(path)}")
 
+    # --- 画像からの数字譜取り込み ----------------------------------------------
+    def _ocr_from_file(self) -> None:
+        if not self._ocr_ready():
+            return
+        path = filedialog.askopenfilename(
+            title="数字譜の画像を開く",
+            filetypes=[("画像", "*.png *.jpg *.jpeg *.bmp *.gif"), ("すべて", "*.*")],
+        )
+        if not path:
+            return
+
+        def work() -> None:
+            try:
+                raw = ocr.ocr_image(path)
+            except ocr.OcrError as exc:
+                self._ocr_failed_threadsafe(str(exc))
+                return
+            self.root.after(0, lambda: self._ocr_done(path, raw))
+
+        self._ocr_begin(work)
+
+    def _ocr_from_clipboard(self) -> None:
+        if not self._ocr_ready():
+            return
+        dest = os.path.join(tempfile.gettempdir(), "autoplaynotes_clipboard.png")
+
+        def work() -> None:
+            try:
+                if not ocr.grab_clipboard_image(dest):
+                    self._ocr_failed_threadsafe(
+                        "クリップボードに画像がありません。\n"
+                        "Win+Shift+S などで数字譜部分をコピーしてから実行してください。"
+                    )
+                    return
+                raw = ocr.ocr_image(dest)
+            except ocr.OcrError as exc:
+                self._ocr_failed_threadsafe(str(exc))
+                return
+            self.root.after(0, lambda: self._ocr_done(dest, raw))
+
+        self._ocr_begin(work)
+
+    def _ocr_ready(self) -> bool:
+        if ocr.is_available():
+            return True
+        messagebox.showinfo(
+            "利用できません",
+            "画像からの取り込みは Windows (PowerShell 内蔵環境) でのみ利用できます。",
+        )
+        return False
+
+    def _ocr_begin(self, work) -> None:
+        self._ocr_btn.configure(state="disabled")
+        self._set_status("画像を認識中...")
+        threading.Thread(target=work, daemon=True).start()
+
+    def _ocr_failed_threadsafe(self, message: str) -> None:
+        self.root.after(0, lambda: self._ocr_failed(message))
+
+    def _ocr_failed(self, message: str) -> None:
+        self._ocr_btn.configure(state="normal")
+        self._set_status("待機中")
+        messagebox.showerror("画像の認識エラー", message)
+        self._log(f"画像の認識エラー: {message.splitlines()[0]}")
+
+    def _ocr_done(self, path: str, raw: str) -> None:
+        self._ocr_btn.configure(state="normal")
+        if not raw.strip():
+            self._set_status("待機中")
+            messagebox.showinfo(
+                "認識結果なし",
+                "画像から文字を認識できませんでした。\n"
+                "数字部分を大きめに切り取った、文字のはっきりした画像で試してください。",
+            )
+            return
+        cleaned = ocr.clean_number_text(raw)
+        tokens = len(cleaned.split())
+        self._set_status(f"認識完了: {tokens} トークン")
+        self._log(f"画像から数字譜を認識: {tokens} トークン ({os.path.basename(path)})")
+        OcrImportDialog(self.root, path, raw, cleaned, on_apply=self._apply_ocr)
+
+    def _apply_ocr(self, text: str) -> None:
+        self._notation.delete("1.0", "end")
+        self._notation.insert("1.0", text)
+        self._source.set("number")
+        self._update_source()
+        self._log("認識した数字譜を楽譜欄に反映し、ソースを『数字譜』に切り替えました。")
+
     def _open_midi(self) -> None:
         if not midi_parser.is_available():
             messagebox.showinfo(
@@ -1122,6 +1219,73 @@ class MiniPlayerWindow(tk.Toplevel):
         self._pos_var.set(pos)
         self._status_var.set(status)
         self._toggle_btn.configure(text="■ 停止" if playing else "▶ 再生")
+
+
+class OcrImportDialog(tk.Toplevel):
+    """画像から認識した数字譜を確認・修正して楽譜欄へ反映するダイアログ。"""
+
+    def __init__(self, parent: tk.Tk, image_path: str, raw_text: str,
+                 cleaned_text: str, on_apply) -> None:
+        super().__init__(parent)
+        self.title("画像から数字譜を取り込み")
+        self.geometry("640x680")
+        self._on_apply = on_apply
+        self._photo: tk.PhotoImage | None = self._load_preview(image_path)
+        if self._photo is not None:
+            ttk.Label(self, image=self._photo).pack(padx=10, pady=(10, 2))
+
+        ttk.Label(self, text="認識した数字譜（ここで修正できます）:").pack(
+            anchor="w", padx=10, pady=(8, 0))
+        self._text = tk.Text(self, wrap="word", font=("Consolas", 11), height=10, undo=True)
+        theme.style_text(self._text)
+        self._text.pack(fill="both", expand=True, padx=10, pady=4)
+        self._text.insert("1.0", cleaned_text)
+
+        raw_frame = ttk.LabelFrame(self, text="生の認識結果（参考）")
+        raw_frame.pack(fill="x", padx=10, pady=4)
+        raw_widget = tk.Text(raw_frame, wrap="word", font=("Consolas", 10), height=4)
+        theme.style_text(raw_widget, log=True)
+        raw_widget.pack(fill="x", padx=4, pady=4)
+        raw_widget.insert("1.0", raw_text)
+        raw_widget.configure(state="disabled")
+
+        self._status = tk.StringVar(
+            value=f"{len(cleaned_text.split())} トークンを認識。『解析チェック』で確認できます。")
+        ttk.Label(self, textvariable=self._status, style="Sub.TLabel").pack(
+            anchor="w", padx=10)
+
+        buttons = ttk.Frame(self)
+        buttons.pack(fill="x", padx=10, pady=(4, 10))
+        ttk.Button(buttons, text="解析チェック", command=self._check).pack(side="left")
+        ttk.Button(buttons, text="楽譜欄へ反映", command=self._apply,
+                   style="Accent.TButton").pack(side="left", padx=4)
+        ttk.Button(buttons, text="閉じる", command=self.destroy).pack(side="right")
+
+        self.transient(parent)
+
+    def _load_preview(self, path: str) -> tk.PhotoImage | None:
+        # tk.PhotoImage が対応する形式のみ（クリップボード経由は常に PNG）
+        if os.path.splitext(path)[1].lower() not in (".png", ".gif"):
+            return None
+        try:
+            photo = tk.PhotoImage(file=path)
+        except tk.TclError:
+            return None
+        factor = max(1, -(-photo.width() // 600), -(-photo.height() // 220))
+        return photo.subsample(factor, factor) if factor > 1 else photo
+
+    def _check(self) -> None:
+        try:
+            score = parse_numbers(self._text.get("1.0", "end"))
+        except Exception as exc:
+            self._status.set(f"解析エラー: {exc}")
+            return
+        beats = max((e.start_beat + e.duration_beat for e in score.events), default=0.0)
+        self._status.set(f"解析 OK: {len(score.events)} 音 / 約 {beats:.0f} 拍")
+
+    def _apply(self) -> None:
+        self._on_apply(self._text.get("1.0", "end").rstrip("\n") + "\n")
+        self.destroy()
 
 
 class ExportDialog(tk.Toplevel):
