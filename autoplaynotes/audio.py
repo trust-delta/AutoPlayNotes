@@ -69,6 +69,28 @@ def _tone(freq: float, dur: float, amp: float = 0.28) -> array.array:
     return samples
 
 
+_click_cache: dict[bool, array.array] = {}
+
+
+def _click(accent: bool = False) -> array.array:
+    """メトロノームのクリック音（短い高音バースト・急速減衰）。"""
+    cached = _click_cache.get(accent)
+    if cached is not None:
+        return cached
+    freq = 2100.0 if accent else 1500.0
+    amp = 0.55 if accent else 0.42
+    dur = 0.028
+    n = max(1, int(dur * _SR))
+    samples = array.array("h", bytes(2 * n))
+    two_pi = 2.0 * math.pi
+    for i in range(n):
+        env = (1.0 - i / n) ** 2  # 急速に減衰させてクリック感を出す
+        s = math.sin(two_pi * freq * i / _SR)
+        samples[i] = _clamp16(int(s * amp * env * 32767))
+    _click_cache[accent] = samples
+    return samples
+
+
 def _chord(freqs: list[float], dur: float) -> array.array:
     tones = [_tone(f, dur) for f in freqs]
     n = len(tones[0]) if tones else 0
@@ -89,34 +111,61 @@ def _wav_bytes(pcm: bytes, sample_rate: int = _SR) -> bytes:
     return buf.getvalue()
 
 
-def render_score_pcm(score: Score, bpm: float, start_sec: float = 0.0) -> bytes:
-    """曲を 16bit mono PCM にレンダリングする。start_sec 秒目以降だけを出力する。"""
+def _mix(main: array.array, sound: array.array, start: int, total_n: int) -> None:
+    for i in range(len(sound)):
+        j = start + i
+        if j < 0:
+            continue
+        if j >= total_n:
+            break
+        main[j] = _clamp16(main[j] + sound[i])
+
+
+def render_score_pcm(
+    score: Score,
+    bpm: float,
+    start_sec: float = 0.0,
+    end_sec: float | None = None,
+    include_notes: bool = True,
+    metronome: bool = False,
+) -> bytes:
+    """曲を 16bit mono PCM にレンダリングする。
+
+    [start_sec, end_sec) の区間だけを出力する（end_sec=None なら曲末まで）。
+    include_notes=False にすると音符を鳴らさず、metronome=True で各拍にクリックを混ぜる
+    （winsound は 1 音源のみ再生できるため、メトロノームは曲に混ぜて 1 つの WAV にする）。
+    """
     if bpm <= 0:
         bpm = 120.0
     seconds_per_beat = 60.0 / bpm
     start_sec = max(0.0, start_sec)
     total_sec = min(score.total_seconds(bpm) + 0.6, _MAX_AUDITION_SEC)
+    if end_sec is not None:
+        total_sec = min(total_sec, end_sec)
     render_sec = max(0.05, total_sec - start_sec)
     total_n = max(1, int(render_sec * _SR))
     main = array.array("h", bytes(2 * total_n))
 
-    for event in score.events:
-        if event.is_rest:
-            continue
-        dur = min(event.duration_beat * seconds_per_beat, 2.0)
-        t = event.start_beat * seconds_per_beat - start_sec
-        if t + dur < 0:
-            continue  # シーク位置より前に鳴り終わる音
-        freqs = [midi_to_freq(m) for m in event.midi_notes]
-        chord = _chord(freqs, dur)
-        start = int(t * _SR)
-        for i in range(len(chord)):
-            j = start + i
-            if j < 0:
+    if include_notes:
+        for event in score.events:
+            if event.is_rest:
                 continue
-            if j >= total_n:
+            dur = min(event.duration_beat * seconds_per_beat, 2.0)
+            t = event.start_beat * seconds_per_beat - start_sec
+            if t + dur < 0:
+                continue  # シーク位置より前に鳴り終わる音
+            freqs = [midi_to_freq(m) for m in event.midi_notes]
+            _mix(main, _chord(freqs, dur), int(t * _SR), total_n)
+
+    if metronome:
+        beat = max(0, math.ceil(start_sec / seconds_per_beat - 1e-6))
+        while True:
+            t = beat * seconds_per_beat - start_sec
+            if t >= render_sec:
                 break
-            main[j] = _clamp16(main[j] + chord[i])
+            if t >= -1e-3:
+                _mix(main, _click(beat % 4 == 0), int(t * _SR), total_n)
+            beat += 1
 
     return main.tobytes()
 
@@ -145,12 +194,29 @@ class AudioPlayer:
         freqs = [midi_to_freq(m) for m in midi_notes]
         self._play_pcm(_chord(freqs, dur).tobytes())
 
-    def play_score(self, score: Score, bpm: float, start_sec: float = 0.0) -> float:
-        """曲を鳴らす（start_sec 秒目から）。戻り値は残り再生秒数。"""
-        if not self._ok or not score.events:
+    def play_score(
+        self,
+        score: Score,
+        bpm: float,
+        start_sec: float = 0.0,
+        end_sec: float | None = None,
+        include_notes: bool = True,
+        metronome: bool = False,
+    ) -> float:
+        """曲を鳴らす（[start_sec, end_sec) 区間）。戻り値は残り再生秒数。
+
+        include_notes=False + metronome=True でメトロノームのみ鳴らせる。
+        """
+        if not self._ok:
             return 0.0
-        self._play_pcm(render_score_pcm(score, bpm, start_sec=start_sec))
-        return max(0.0, min(score.total_seconds(bpm), _MAX_AUDITION_SEC) - max(0.0, start_sec))
+        if include_notes and not score.events and not metronome:
+            return 0.0
+        self._play_pcm(render_score_pcm(
+            score, bpm, start_sec=start_sec, end_sec=end_sec,
+            include_notes=include_notes, metronome=metronome,
+        ))
+        end = min(score.total_seconds(bpm), _MAX_AUDITION_SEC) if end_sec is None else min(end_sec, _MAX_AUDITION_SEC)
+        return max(0.0, end - max(0.0, start_sec))
 
     def stop(self) -> None:
         if not self._ok:

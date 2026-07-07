@@ -103,6 +103,12 @@ class PracticeWindow(ctk.CTkToplevel):
         self._speed = tk.DoubleVar(value=1.0)
         self._seek_amt = tk.DoubleVar(value=3.0)
         self._audio_on = tk.BooleanVar(value=(audio is not None and audio.is_available()))
+        # メトロノームと A-B ループ（リズムモード用）
+        self._metro = tk.BooleanVar(value=False)
+        self._loop_on = tk.BooleanVar(value=False)
+        self._loop_a: float | None = None
+        self._loop_b: float | None = None
+        self._loop_var = tk.StringVar(value="A–B: 未設定")
         self._score_var = tk.StringVar(value="Score 0")
         self._combo_var = tk.StringVar(value="")
         self._judge_var = tk.StringVar(value="")
@@ -217,6 +223,25 @@ class PracticeWindow(ctk.CTkToplevel):
         speed_menu.pack(side="left")
         ctk.CTkCheckBox(controls, text="音を鳴らす", variable=self._audio_on,
                         onvalue=True, offvalue=False).pack(side="left", padx=12)
+
+        # 練習補助（リズムモード）: メトロノーム + A-B ループ
+        aids = ctk.CTkFrame(self, fg_color="transparent")
+        aids.pack(fill="x", padx=14, pady=(0, 2))
+        aud_ok = self.audio is not None and self.audio.is_available()
+        ctk.CTkCheckBox(aids, text="🎵 メトロノーム", variable=self._metro,
+                        onvalue=True, offvalue=False,
+                        state=("normal" if aud_ok else "disabled")).pack(side="left")
+        ctk.CTkLabel(aids, text="｜ A-B ループ:").pack(side="left", padx=(12, 4))
+        ctk.CTkButton(aids, text="A設定", width=64,
+                      command=lambda: self._set_loop_point("a")).pack(side="left", padx=2)
+        ctk.CTkButton(aids, text="B設定", width=64,
+                      command=lambda: self._set_loop_point("b")).pack(side="left", padx=2)
+        ctk.CTkSwitch(aids, text="ループ", variable=self._loop_on,
+                      onvalue=True, offvalue=False, width=70).pack(side="left", padx=6)
+        ctk.CTkButton(aids, text="解除", width=54,
+                      command=self._clear_loop).pack(side="left", padx=2)
+        ctk.CTkLabel(aids, textvariable=self._loop_var,
+                     text_color=theme.pair("subtle")).pack(side="left", padx=8)
 
         ctk.CTkLabel(self, textvariable=self._instr,
                      text_color=theme.pair("subtle")).pack(anchor="w", padx=16, pady=(0, 4))
@@ -353,8 +378,7 @@ class PracticeWindow(ctk.CTkToplevel):
                     n.judged = False
                     n.hit = False
                     n.missed = False
-            if self._audio_on.get() and self.audio is not None and self.audio.is_available():
-                self.audio.play_score(self.score, self._eff_bpm(), start_sec=new_now)
+            self._rhythm_audio(new_now, self._loop_b if self._loop_active() else None)
             self._pos_var.set(f"{_fmt_time(new_now)} / {_fmt_time(total)}")
             self._staff_cursor(new_now / spb)
         else:
@@ -436,6 +460,10 @@ class PracticeWindow(ctk.CTkToplevel):
 
     def _begin_run(self) -> None:
         start_sec = self._start_sec
+        end_sec = None
+        if self._loop_active():
+            start_sec = self._loop_a  # type: ignore[assignment]
+            end_sec = self._loop_b
         spb = self._spb()
         self._t0 = time.perf_counter() - start_sec
         for n in self._notes:
@@ -443,16 +471,75 @@ class PracticeWindow(ctk.CTkToplevel):
             n.judged = before
             n.hit = False
             n.missed = False
-        if self._audio_on.get() and self.audio is not None and self.audio.is_available():
-            self.audio.play_score(self.score, self._eff_bpm(), start_sec=start_sec)
+        self._rhythm_audio(start_sec, end_sec)
         self._running = True
         self._tick()
+
+    # --- メトロノーム / A-B ループ --------------------------------------------
+    def _rhythm_audio(self, start_sec: float, end_sec: float | None = None) -> None:
+        """リズムモードの音（メロディ＋メトロノーム）を鳴らす。両方オフなら無音。"""
+        if self.audio is None or not self.audio.is_available():
+            return
+        notes = self._audio_on.get()
+        metro = self._metro.get()
+        if not (notes or metro):
+            return
+        self.audio.play_score(self.score, self._eff_bpm(), start_sec=start_sec,
+                              end_sec=end_sec, include_notes=notes, metronome=metro)
+
+    def _loop_active(self) -> bool:
+        return (self._loop_on.get() and self._loop_a is not None
+                and self._loop_b is not None)
+
+    def _cur_pos(self) -> float:
+        return (time.perf_counter() - self._t0) if self._running else self._start_sec
+
+    def _set_loop_point(self, which: str) -> None:
+        pos = max(0.0, self._cur_pos())
+        if which == "a":
+            self._loop_a = pos
+        else:
+            self._loop_b = pos
+        if (self._loop_a is not None and self._loop_b is not None
+                and self._loop_b <= self._loop_a):
+            self._loop_a, self._loop_b = self._loop_b, self._loop_a
+        self._update_loop_label()
+
+    def _clear_loop(self) -> None:
+        self._loop_a = self._loop_b = None
+        self._loop_on.set(False)
+        self._update_loop_label()
+
+    def _update_loop_label(self) -> None:
+        a = f"{self._loop_a:.1f}" if self._loop_a is not None else "—"
+        b = f"{self._loop_b:.1f}" if self._loop_b is not None else "—"
+        if self._loop_a is None and self._loop_b is None:
+            self._loop_var.set("A–B: 未設定")
+        else:
+            self._loop_var.set(f"A–B: {a}s – {b}s")
+
+    def _loop_back(self) -> None:
+        a = self._loop_a or 0.0
+        b = self._loop_b or 0.0
+        spb = self._spb()
+        self._t0 = time.perf_counter() - a
+        for n in self._notes:
+            t = n.beat * spb
+            if t < a - _MISS_LATE:
+                n.judged, n.hit, n.missed = True, False, False
+            elif t < b:
+                n.judged, n.hit, n.missed = False, False, False
+        self._rhythm_audio(a, b)
+        self._after = self.after(16, self._tick)
 
     def _tick(self) -> None:
         if not self.winfo_exists() or not self._running:
             return
         now = time.perf_counter() - self._t0
         spb = self._spb()
+        if self._loop_active() and now >= self._loop_b - 1e-3:  # type: ignore[operator]
+            self._loop_back()
+            return
         for note in self._notes:
             if not note.judged and now - note.beat * spb > _MISS_LATE:
                 note.judged = True

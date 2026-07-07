@@ -24,7 +24,7 @@ from typing import Callable
 
 import customtkinter as ctk
 
-from . import theme
+from . import pdf, theme
 from .model import NoteEvent, Score
 from .staff import midi_to_staff, staff_to_midi
 
@@ -71,6 +71,7 @@ def _pitch_options() -> list[str]:
 
 _MAX_DISPLAY_W = 1000  # 初期フィット時の最大表示幅(px)
 _ZOOMS = {"フィット": 1.0, "1.25x": 1.25, "1.5x": 1.5, "2x": 2.0, "0.75x": 0.75}
+_PDF_SCALE = 2.0  # PDF ラスタライズ倍率（約 144dpi）
 
 
 class TraceWindow(ctk.CTkToplevel):
@@ -90,11 +91,14 @@ class TraceWindow(ctk.CTkToplevel):
         self._on_apply = on_apply
         self._audio = audio
 
-        # 画像
-        self._src = Image.open(image_path).convert("RGB")
-        self._base_fit = min(_MAX_DISPLAY_W / self._src.width, 1.0)
-        self._scale = self._base_fit
+        # 画像 / PDF
+        self._pdf_path: str | None = None
+        self._page = 0
+        self._page_count = 1
         self._photo: ImageTk.PhotoImage | None = None
+        self._page_var = tk.StringVar(value="1")
+        self._load_source(image_path)
+        self._scale = self._base_fit
 
         # キャリブレーション（画像座標）: (step, image_y) を 2 点
         self._cal_top: tuple[int, float] | None = None
@@ -118,6 +122,7 @@ class TraceWindow(ctk.CTkToplevel):
         self._status = tk.StringVar()
 
         self._build_ui(audio_ok)
+        self._refresh_page_menu()
         self._render_image()
         self._set_status(
             "まず「① 音高キャリブレーション」を押し、五線の上端の線→下端の線の順にクリックしてください。"
@@ -151,7 +156,11 @@ class TraceWindow(ctk.CTkToplevel):
         ctk.CTkOptionMenu(bar1, variable=self._zoom, width=90,
                           values=list(_ZOOMS.keys()),
                           command=self._on_zoom).pack(side="left")
-        ctk.CTkButton(bar1, text="別の画像...", width=90,
+        ctk.CTkLabel(bar1, text="ページ:").pack(side="left", padx=(12, 2))
+        self._page_menu = ctk.CTkOptionMenu(bar1, variable=self._page_var, width=70,
+                                            values=["1"], command=self._on_page)
+        self._page_menu.pack(side="left")
+        ctk.CTkButton(bar1, text="別の画像/PDF...", width=110,
                       command=self._change_image).pack(side="right")
 
         bar2 = ctk.CTkFrame(self, fg_color="transparent")
@@ -202,6 +211,46 @@ class TraceWindow(ctk.CTkToplevel):
                       **theme.BTN_ACCENT).pack(side="left")
         ctk.CTkButton(buttons, text="閉じる", width=80,
                       command=self.destroy).pack(side="right")
+
+    # --- 画像 / PDF の読み込み -------------------------------------------------
+    def _load_source(self, path: str) -> None:
+        """画像または PDF を読み込み、self._src と base_fit を設定する。"""
+        if pdf.is_pdf(path):
+            if not pdf.is_available():
+                raise ValueError("PDF を開くには pypdfium2 が必要です（pip install pypdfium2）。")
+            self._pdf_path = path
+            self._page_count = pdf.page_count(path)
+            self._page = 0
+            self._src = pdf.render_page(path, 0, _PDF_SCALE)
+        else:
+            self._pdf_path = None
+            self._page_count = 1
+            self._page = 0
+            self._src = Image.open(path).convert("RGB")
+        self._base_fit = min(_MAX_DISPLAY_W / self._src.width, 1.0)
+        self._page_var.set("1")
+
+    def _refresh_page_menu(self) -> None:
+        values = [str(i + 1) for i in range(self._page_count)]
+        self._page_menu.configure(values=values,
+                                  state=("normal" if self._page_count > 1 else "disabled"))
+        self._page_var.set(str(self._page + 1))
+
+    def _on_page(self, label: str) -> None:
+        if self._pdf_path is None:
+            return
+        idx = max(0, min(int(label) - 1, self._page_count - 1))
+        if idx == self._page:
+            return
+        self._page = idx
+        self._src = pdf.render_page(self._pdf_path, idx, _PDF_SCALE)
+        self._base_fit = min(_MAX_DISPLAY_W / self._src.width, 1.0)
+        self._scale = self._base_fit * _ZOOMS.get(self._zoom.get(), 1.0)
+        self._cal_top = self._cal_bot = None  # ページごとにキャリブレーションが要る
+        self._render_image()
+        self._set_status(
+            f"ページ {idx + 1}。このページの五線で音高キャリブレーションをやり直してください。"
+        )
 
     # --- 座標変換 -------------------------------------------------------------
     def _to_img(self, cx: float, cy: float) -> tuple[float, float]:
@@ -257,7 +306,9 @@ class TraceWindow(ctk.CTkToplevel):
         self.canvas.delete("mark")
         p = theme.palette()
         for slot in self._slots:
-            for _midi, img_x, img_y in slot["notes"]:
+            for _midi, img_x, img_y, page in slot["notes"]:
+                if page != self._page:
+                    continue  # 別ページに置いた音符は表示しない
                 x = img_x * self._scale
                 y = img_y * self._scale
                 self.canvas.create_oval(x - 6, y - 5, x + 6, y + 5,
@@ -274,21 +325,22 @@ class TraceWindow(ctk.CTkToplevel):
         from tkinter import filedialog
 
         path = filedialog.askopenfilename(
-            title="楽譜画像を開く", parent=self,
-            filetypes=[("画像", "*.png *.jpg *.jpeg *.bmp *.gif"), ("すべて", "*.*")],
+            title="楽譜画像 / PDF を開く", parent=self,
+            filetypes=[("画像 / PDF", "*.png *.jpg *.jpeg *.bmp *.gif *.pdf"),
+                       ("すべて", "*.*")],
         )
         if not path:
             return
         try:
-            self._src = Image.open(path).convert("RGB")
+            self._load_source(path)
         except Exception as exc:  # noqa: BLE001
-            self._set_status(f"画像を開けませんでした: {exc}")
+            self._set_status(f"開けませんでした: {exc}")
             return
-        self._base_fit = min(_MAX_DISPLAY_W / self._src.width, 1.0)
         self._scale = self._base_fit * _ZOOMS.get(self._zoom.get(), 1.0)
         self._cal_top = self._cal_bot = None
+        self._refresh_page_menu()
         self._render_image()
-        self._set_status("画像を差し替えました。音高キャリブレーションからやり直してください。")
+        self._set_status("差し替えました。音高キャリブレーションからやり直してください。")
 
     def _begin_calibration(self) -> None:
         self._mode = "calib_top"
@@ -335,12 +387,12 @@ class TraceWindow(ctk.CTkToplevel):
 
         self._push_undo()
         if self._chord.get() and self._slots:
-            self._slots[-1]["notes"].append((midi, img_x, snap_y))
+            self._slots[-1]["notes"].append((midi, img_x, snap_y, self._page))
         else:
             dur = _DURATIONS.get(self._dur.get(), 1.0)
             self._slots.append({
                 "beat": self._beat, "dur": dur,
-                "notes": [(midi, img_x, snap_y)],
+                "notes": [(midi, img_x, snap_y, self._page)],
             })
             self._beat += dur
         self._preview((midi,))
@@ -358,7 +410,9 @@ class TraceWindow(ctk.CTkToplevel):
         best = None
         best_d = 14.0 ** 2
         for si, slot in enumerate(self._slots):
-            for ni, (_midi, img_x, img_y) in enumerate(slot["notes"]):
+            for ni, (_midi, img_x, img_y, page) in enumerate(slot["notes"]):
+                if page != self._page:
+                    continue
                 dx = img_x * self._scale - cx
                 dy = img_y * self._scale - cy
                 d = dx * dx + dy * dy
@@ -416,7 +470,7 @@ class TraceWindow(ctk.CTkToplevel):
     def _build_score(self) -> Score:
         events: list[NoteEvent] = []
         for slot in sorted(self._slots, key=lambda s: s["beat"]):
-            midis = tuple(sorted(m for m, _x, _y in slot["notes"]))
+            midis = tuple(sorted(m for m, _x, _y, _p in slot["notes"]))
             if midis:
                 events.append(NoteEvent(slot["beat"], slot["dur"], midis))
         return Score(tempo_bpm=120.0, events=events, title="トレース入力")

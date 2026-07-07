@@ -12,7 +12,7 @@ from tkinter import filedialog, messagebox
 
 import customtkinter as ctk
 
-from . import midi_parser, musicxml_parser, ocr, omr, theme, trace
+from . import midi_parser, musicxml_parser, ocr, omr, pdf, theme, trace
 from .resources import icon_path
 from .audio import AudioPlayer
 from .config import AppConfig
@@ -24,6 +24,7 @@ from .number_parser import parse_numbers
 from .player import PlaybackOptions, Player, preview_lines
 from .playlist import Playlist, PlaylistItem
 from .practice import PracticeWindow
+from .score_export import score_to_midi_bytes, score_to_musicxml
 from .staff import StaffWindow
 from .text_parser import parse_text
 from .win_input import KeySender
@@ -878,9 +879,13 @@ class App:
         if not self._ocr_ready():
             return
         path = filedialog.askopenfilename(
-            title="数字譜の画像を開く",
-            filetypes=[("画像", "*.png *.jpg *.jpeg *.bmp *.gif"), ("すべて", "*.*")],
+            title="数字譜の画像 / PDF を開く",
+            filetypes=[("画像 / PDF", "*.png *.jpg *.jpeg *.bmp *.gif *.pdf"),
+                       ("すべて", "*.*")],
         )
+        if not path:
+            return
+        path = self._resolve_pdf(path, scale=2.78)
         if not path:
             return
 
@@ -961,6 +966,39 @@ class App:
         self._update_source()
         self._log("認識した数字譜を楽譜欄に反映し、ソースを『数字譜』に切り替えました。")
 
+    # --- PDF 入力の共通処理 ----------------------------------------------------
+    def _resolve_pdf(self, path: str, scale: float) -> str | None:
+        """PDF なら 1 ページを画像化して一時 PNG のパスを返す。画像ならそのまま返す。
+
+        複数ページのときはページ番号を尋ねる。キャンセル/未対応なら None。
+        """
+        if not pdf.is_pdf(path):
+            return path
+        if not pdf.is_available():
+            messagebox.showinfo(
+                "PDF に未対応",
+                "PDF を読み込むには pypdfium2 が必要です。\n"
+                "コマンドプロンプトで\n\n    pip install pypdfium2\n\nを実行してください。",
+            )
+            return None
+        try:
+            n = pdf.page_count(path)
+            index = 0
+            if n > 1:
+                dialog = ctk.CTkInputDialog(
+                    title="ページ選択", text=f"読み込むページ番号（1〜{n}）:")
+                value = dialog.get_input()
+                if value is None:
+                    return None
+                try:
+                    index = max(0, min(int(value.strip()) - 1, n - 1))
+                except ValueError:
+                    index = 0
+            return pdf.render_page_to_png(path, index, scale)
+        except Exception as exc:  # noqa: BLE001
+            messagebox.showerror("PDF の読み込みエラー", str(exc))
+            return None
+
     # --- 楽譜画像トレース入力 --------------------------------------------------
     def _trace_from_file(self) -> None:
         if not trace.is_available():
@@ -971,15 +1009,22 @@ class App:
             )
             return
         path = filedialog.askopenfilename(
-            title="なぞる楽譜画像を開く",
-            filetypes=[("画像", "*.png *.jpg *.jpeg *.bmp *.gif"), ("すべて", "*.*")],
+            title="なぞる楽譜画像 / PDF を開く",
+            filetypes=[("画像 / PDF", "*.png *.jpg *.jpeg *.bmp *.gif *.pdf"),
+                       ("すべて", "*.*")],
         )
         if not path:
+            return
+        if pdf.is_pdf(path) and not pdf.is_available():
+            messagebox.showinfo(
+                "PDF に未対応",
+                "PDF を読み込むには pypdfium2 が必要です（pip install pypdfium2）。",
+            )
             return
         try:
             trace.TraceWindow(self.root, path, on_apply=self._apply_trace, audio=self.audio)
         except Exception as exc:  # noqa: BLE001
-            messagebox.showerror("画像を開けません", str(exc))
+            messagebox.showerror("開けません", str(exc))
 
     def _apply_trace(self, score: Score) -> None:
         from .text_parser import score_to_text
@@ -1004,9 +1049,12 @@ class App:
             )
             return
         path = filedialog.askopenfilename(
-            title="五線譜の画像を開く",
-            filetypes=[("画像", "*.png *.jpg *.jpeg *.bmp"), ("すべて", "*.*")],
+            title="五線譜の画像 / PDF を開く",
+            filetypes=[("画像 / PDF", "*.png *.jpg *.jpeg *.bmp *.pdf"), ("すべて", "*.*")],
         )
+        if not path:
+            return
+        path = self._resolve_pdf(path, scale=2.78)
         if not path:
             return
         if not messagebox.askokcancel(
@@ -1567,8 +1615,20 @@ class ExportDialog(ctk.CTkToplevel):
         self._text = ctk.CTkTextbox(self, wrap="word", font=(theme.FONT_MONO, 13))
         self._text.pack(fill="both", expand=True, padx=14, pady=6)
 
+        # 他ツール連携用のファイル書き出し（テキスト形式とは独立）
+        files = ctk.CTkFrame(self, fg_color="transparent")
+        files.pack(fill="x", padx=14, pady=(0, 2))
+        ctk.CTkLabel(files, text="他ツールへ書き出し:",
+                     text_color=theme.pair("subtle")).pack(side="left")
+        ctk.CTkButton(files, text="MIDI で保存...", width=120,
+                      command=self._save_midi).pack(side="left", padx=6)
+        ctk.CTkButton(files, text="MusicXML で保存...", width=140,
+                      command=self._save_musicxml).pack(side="left")
+        ctk.CTkLabel(files, text="（MuseScore・Sibelius 等で開けます）",
+                     text_color=theme.pair("subtle")).pack(side="left", padx=8)
+
         buttons = ctk.CTkFrame(self, fg_color="transparent")
-        buttons.pack(fill="x", padx=14, pady=(0, 14))
+        buttons.pack(fill="x", padx=14, pady=(2, 14))
         ctk.CTkButton(buttons, text="コピー", width=80, command=self._copy).pack(side="left")
         ctk.CTkButton(buttons, text="保存...", width=80,
                       command=self._save).pack(side="left", padx=6)
@@ -1617,6 +1677,36 @@ class ExportDialog(ctk.CTkToplevel):
             messagebox.showerror("保存エラー", str(exc), parent=self)
             return
         messagebox.showinfo("保存", f"保存しました: {os.path.basename(path)}", parent=self)
+
+    def _save_midi(self) -> None:
+        path = filedialog.asksaveasfilename(
+            title="MIDI で保存", defaultextension=".mid",
+            filetypes=[("MIDI", "*.mid"), ("すべて", "*.*")], parent=self,
+        )
+        if not path:
+            return
+        try:
+            with open(path, "wb") as f:
+                f.write(score_to_midi_bytes(self._score, self._score.tempo_bpm))
+        except Exception as exc:  # noqa: BLE001
+            messagebox.showerror("保存エラー", str(exc), parent=self)
+            return
+        messagebox.showinfo("保存", f"MIDI を保存しました: {os.path.basename(path)}", parent=self)
+
+    def _save_musicxml(self) -> None:
+        path = filedialog.asksaveasfilename(
+            title="MusicXML で保存", defaultextension=".musicxml",
+            filetypes=[("MusicXML", "*.musicxml *.xml"), ("すべて", "*.*")], parent=self,
+        )
+        if not path:
+            return
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(score_to_musicxml(self._score))
+        except Exception as exc:  # noqa: BLE001
+            messagebox.showerror("保存エラー", str(exc), parent=self)
+            return
+        messagebox.showinfo("保存", f"MusicXML を保存しました: {os.path.basename(path)}", parent=self)
 
     def _reflect(self) -> None:
         fmt = self._format.get()
