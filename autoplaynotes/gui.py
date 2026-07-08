@@ -12,7 +12,7 @@ from tkinter import filedialog, messagebox
 
 import customtkinter as ctk
 
-from . import midi_parser, musicxml_parser, ocr, omr, pdf, theme, trace
+from . import midi_parser, musicxml_parser, ocr, omr, pdf, pitch, theme, trace
 from .resources import icon_path
 from .audio import AudioPlayer
 from .config import AppConfig
@@ -101,6 +101,7 @@ class App:
         self._midi_mono = False
         self._midi_octave = 0
         self._omr_last_progress = 0.0
+        self._pitch_last_progress = 0.0
         self._mapping_var = tk.StringVar(value=self.config.active_mapping)
         self._status_var = tk.StringVar(value="待機中")
         self._loop_var = tk.BooleanVar(value=self.config.loop)
@@ -243,7 +244,10 @@ class App:
                                    command=self._trace_from_file)
         self._ocr_menu.add_command(label="五線譜の画像から (OMR・アドオン)...",
                                    command=self._omr_from_file)
-        self._ocr_btn = ctk.CTkButton(tools, text="📷 画像から取り込み ▾", width=160,
+        self._ocr_menu.add_separator()
+        self._ocr_menu.add_command(label="音源（音声ファイル）から (採譜・アドオン)...",
+                                   command=self._pitch_from_file)
+        self._ocr_btn = ctk.CTkButton(tools, text="📥 取り込み ▾", width=160,
                                       command=self._post_ocr_menu)
         self._ocr_btn.pack(side="left", padx=(0, 6))
         ctk.CTkButton(tools, text="五線譜で表示/編集", width=140,
@@ -1084,6 +1088,53 @@ class App:
         self._set_status("五線譜の認識が完了しました")
         self._log(f"五線譜画像を MusicXML 化: {os.path.basename(xml_path)}（画像と同じフォルダに保存）")
         self._load_score_file(xml_path)
+
+    # --- 音源からの採譜（Phase 3a: audio → MIDI → Score → 練習） ----------------
+    def _pitch_from_file(self) -> None:
+        if not pitch.is_available():
+            messagebox.showinfo("採譜アドオンが必要です", pitch.install_hint())
+            return
+        path = filedialog.askopenfilename(
+            title="音源（音声ファイル）を開く",
+            filetypes=[("音声ファイル", "*.wav *.mp3 *.flac *.ogg *.m4a *.aac *.aiff *.aif"),
+                       ("すべて", "*.*")],
+        )
+        if not path:
+            return
+        if not messagebox.askokcancel(
+            "音源の採譜",
+            "音源からの採譜には数分かかることがあります（その間 CPU 使用率が上がります）。\n"
+            "ドライなソロピアノ音源が最も精度が出ます。結果は下書き品質です。\n"
+            "取り込み後に五線譜エディタ／トレースで修正してください。\n\n"
+            "認識結果の MIDI は音源と同じフォルダに保存されます。開始しますか？",
+        ):
+            return
+
+        def work() -> None:
+            try:
+                midi_path = pitch.transcribe(path, on_progress=self._pitch_progress_threadsafe)
+            except pitch.PitchError as exc:
+                self._ocr_failed_threadsafe(str(exc))
+                return
+            self.root.after(0, lambda: self._pitch_done(midi_path))
+
+        self._ocr_begin(work)
+
+    def _pitch_progress_threadsafe(self, line: str) -> None:
+        # basic-pitch のログを 0.2 秒間引いてステータスへ
+        now = time.monotonic()
+        if now - self._pitch_last_progress < 0.2:
+            return
+        self._pitch_last_progress = now
+        text = line[-60:]
+        self.root.after(0, lambda: self._set_status(f"音源を採譜中... {text}"))
+
+    def _pitch_done(self, midi_path: str) -> None:
+        self._ocr_btn.configure(state="normal")
+        self._set_status("音源の採譜が完了しました")
+        self._log(f"音源を MIDI 化: {os.path.basename(midi_path)}（音源と同じフォルダに保存）")
+        # 生成 MIDI を既存の MIDI 取り込み経路へ。パート選択→Score→練習/自動演奏まで一気通貫。
+        self._load_score_file(midi_path)
 
     def _open_midi(self) -> None:
         path = filedialog.askopenfilename(

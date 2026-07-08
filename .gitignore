@@ -20,6 +20,11 @@ config.json
 /omr.zip
 omr-addon/*.zip
 
+# 採譜アドオン（音源→MIDI）のビルド成果物
+/pitch/
+/pitch.zip
+pitch-addon/*.zip
+
 # 非公開の戦略ドキュメント（価格・競合・GTM を含むため公開 repo に入れない）
 *.private.md
 
