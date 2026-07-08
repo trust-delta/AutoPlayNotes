@@ -72,7 +72,7 @@ class BuildCommandTest(unittest.TestCase):
             base_dir=os.path.abspath("C:/addon"),
         )
         argv, run_env = omr._build_command(engine, "in.png", "outdir")
-        self.assertEqual(argv[0], os.path.join(os.path.abspath("C:/addon"), "bin/run.exe"))
+        self.assertEqual(argv[0], os.path.normpath(os.path.join(os.path.abspath("C:/addon"), "bin/run.exe")))
         self.assertEqual(argv[-2], "outdir")
         self.assertEqual(argv[-1], "in.png")
         self.assertIsNone(run_env)
@@ -88,6 +88,16 @@ class BuildCommandTest(unittest.TestCase):
         engine = omr.OmrEngine(source="path", command=("oemer", "-o", "{out}", "{image}"))
         argv, _ = omr._build_command(engine, "in.png", "out")
         self.assertEqual(argv[0], "oemer")
+
+    def test_addon_placeholder_in_command(self) -> None:
+        engine = omr.OmrEngine(
+            source="addon",
+            command=("python/python.exe", "{addon}/run_omr.py", "-o", "{out}", "{image}"),
+            base_dir=os.path.abspath("C:/addon"),
+        )
+        argv, _ = omr._build_command(engine, "in.png", "out")
+        self.assertEqual(argv[0], os.path.normpath(os.path.join(os.path.abspath("C:/addon"), "python/python.exe")))
+        self.assertEqual(argv[1], os.path.abspath("C:/addon") + "/run_omr.py")
 
     def test_env_addon_placeholder(self) -> None:
         engine = omr.OmrEngine(

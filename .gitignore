@@ -15,6 +15,11 @@ env/
 # アプリの生成物（設定は %APPDATA% に保存されるが念のため）
 config.json
 
+# OMR アドオンのビルド成果物（exe 同様 git には入れず BOOTH で配布）
+/omr/
+/omr.zip
+omr-addon/*.zip
+
 # OS / エディタ
 .DS_Store
 Thumbs.db

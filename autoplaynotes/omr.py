@@ -46,10 +46,11 @@ class OmrError(RuntimeError):
 class OmrEngine:
     """解決済みの OMR エンジン起動情報。
 
-    command は argv テンプレート。`{image}`（入力画像）と `{out}`（出力先
-    フォルダ）を実行時に置換する。source=="addon" のとき command[0] が
-    相対パスなら base_dir 基準で絶対化する。env の値では `{addon}` を
-    base_dir に置換できる（同梱モデルの場所を渡す等）。
+    command は argv テンプレート。`{image}`（入力画像）・`{out}`（出力先
+    フォルダ）・`{addon}`（アドオンフォルダ=base_dir）を実行時に置換する。
+    source=="addon" のとき command[0] が相対パスなら base_dir 基準で
+    絶対化する。env の値でも `{addon}` を base_dir に置換できる
+    （同梱モデルの場所を渡す等）。
     """
 
     source: str            # "addon" | "path"
@@ -150,12 +151,13 @@ def _build_command(
     engine: OmrEngine, image_path: str, output_dir: str
 ) -> tuple[list[str], dict[str, str] | None]:
     """エンジンの argv とサブプロセス環境を実値で組み立てる。"""
-    mapping = {"image": image_path, "out": output_dir}
+    mapping = {"image": image_path, "out": output_dir, "addon": engine.base_dir}
     argv: list[str] = []
     for index, token in enumerate(engine.command):
         filled = _fill(token, mapping)
         if index == 0 and engine.source == "addon" and not os.path.isabs(filled):
-            filled = os.path.join(engine.base_dir, filled)
+            # 実行ファイルは OS ネイティブ区切りに正規化（CreateProcess 対策）
+            filled = os.path.normpath(os.path.join(engine.base_dir, filled))
         argv.append(filled)
 
     run_env: dict[str, str] | None = None
