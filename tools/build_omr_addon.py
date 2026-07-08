@@ -88,7 +88,9 @@ def ensure_python(addon_dir: str, python_dir: str | None, pbs_url: str | None) -
         blob = _download(url)
         log("展開中 (python-build-standalone)...")
         with tarfile.open(fileobj=io.BytesIO(blob), mode="r:gz") as tar:
-            tar.extractall(addon_dir)  # アーカイブ直下の python/ が addon_dir/python になる
+            # アーカイブ直下の python/ が addon_dir/python になる。
+            # filter="data" で危険なパス/リンクを弾く（Python 3.14 の既定変更にも先行対応）
+            tar.extractall(addon_dir, filter="data")
     exe = os.path.join(dest, "python.exe")
     if not os.path.isfile(exe):
         raise RuntimeError(f"python.exe が見つかりません: {exe}")
