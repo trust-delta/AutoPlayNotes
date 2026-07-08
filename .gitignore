@@ -20,6 +20,9 @@ config.json
 /omr.zip
 omr-addon/*.zip
 
+# 非公開の戦略ドキュメント（価格・競合・GTM を含むため公開 repo に入れない）
+*.private.md
+
 # OS / エディタ
 .DS_Store
 Thumbs.db
