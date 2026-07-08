@@ -45,6 +45,8 @@ class AppConfig:
     custom_mappings: dict[str, dict[str, Any]] = field(default_factory=dict)
     # プレイリスト（PlaylistItem.to_dict のリスト）
     playlist: list[dict[str, Any]] = field(default_factory=list)
+    # 練習メモ（曲キー -> メモ dict のリスト。practice_notes モジュール参照）
+    practice_notes: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
 
     def mapping(self) -> KeyMapping:
         """現在有効なマッピングを返す。"""

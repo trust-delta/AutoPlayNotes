@@ -19,7 +19,7 @@ from dataclasses import dataclass
 
 import customtkinter as ctk
 
-from . import theme
+from . import practice_notes, theme
 from .keymap import KeyMapping
 from .model import Score
 from .staff import StaffCanvas
@@ -64,7 +64,8 @@ class _Note:
 
 
 class PracticeWindow(ctk.CTkToplevel):
-    def __init__(self, parent: tk.Widget, score: Score, mapping: KeyMapping, audio=None) -> None:
+    def __init__(self, parent: tk.Widget, score: Score, mapping: KeyMapping, audio=None,
+                 config=None) -> None:
         super().__init__(parent)
         self.title("練習モード")
         self.resizable(False, False)
@@ -72,6 +73,11 @@ class PracticeWindow(ctk.CTkToplevel):
         self.score = score
         self.mapping = mapping
         self.audio = audio
+        # 練習メモ（ユーザーの練習メモ＋作り手の気づき backlog の二役）。
+        # config があれば practice_notes に永続化、無ければセッション内のみ保持。
+        self.config = config
+        self._notes_store: dict = config.practice_notes if config is not None else {}
+        self._song_key = practice_notes.song_key(getattr(score, "title", ""), len(score.events))
 
         self._lanes: list[str] = []
         self._char_to_lane: dict[str, int] = {}
@@ -241,6 +247,17 @@ class PracticeWindow(ctk.CTkToplevel):
         ctk.CTkButton(aids, text="解除", width=54,
                       command=self._clear_loop).pack(side="left", padx=2)
         ctk.CTkLabel(aids, textvariable=self._loop_var,
+                     text_color=theme.pair("subtle")).pack(side="left", padx=8)
+
+        # 練習メモ（両モード共通）
+        memo_row = ctk.CTkFrame(self, fg_color="transparent")
+        memo_row.pack(fill="x", padx=14, pady=(0, 2))
+        self._memo_btn = ctk.CTkButton(memo_row, text=self._memo_btn_text(), width=150,
+                                       command=self._add_memo)
+        self._memo_btn.pack(side="left")
+        ctk.CTkButton(memo_row, text="📝 メモ一覧", width=110,
+                      command=self._show_memos).pack(side="left", padx=8)
+        ctk.CTkLabel(memo_row, text="練習中の気づき（難所・指使い等）を残せます",
                      text_color=theme.pair("subtle")).pack(side="left", padx=8)
 
         ctk.CTkLabel(self, textvariable=self._instr,
@@ -744,9 +761,124 @@ class PracticeWindow(ctk.CTkToplevel):
         c.create_text(_CANVAS_W / 2, _CANVAS_H / 2, text=text, fill="#e8eef7",
                       font=("", 12), justify="center", tags="note")
 
+    # --- 練習メモ -------------------------------------------------------------
+    def _current_beat(self) -> float:
+        """現在の練習位置（拍）。メモをどこに紐づけるか。無ければ -1。"""
+        if self._mode.get() == "step":
+            if self._steps:
+                return self._step_beats[min(self._cur, len(self._steps) - 1)]
+            return -1.0
+        spb = self._spb()
+        return max(0.0, self._cur_pos() / spb) if spb > 0 else -1.0
+
+    def _memo_btn_text(self) -> str:
+        n = practice_notes.note_count(self._notes_store, self._song_key)
+        return f"💡 メモ ({n})" if n else "💡 メモ"
+
+    def _refresh_memo_btn(self) -> None:
+        if hasattr(self, "_memo_btn"):
+            self._memo_btn.configure(text=self._memo_btn_text())
+
+    def _save_notes(self) -> None:
+        if self.config is not None:
+            self.config.save()
+
+    def _add_memo(self) -> None:
+        MemoDialog(self, self._current_beat(), self._on_memo_saved)
+
+    def _on_memo_saved(self, beat: float, tag: str, text: str) -> None:
+        note = practice_notes.PracticeNote(
+            beat=beat, tag=tag, text=text, created=time.strftime("%Y-%m-%d %H:%M"))
+        practice_notes.add_note(self._notes_store, self._song_key, note)
+        self._save_notes()
+        self._refresh_memo_btn()
+
+    def _show_memos(self) -> None:
+        MemoListDialog(self, self._notes_store, self._song_key,
+                       on_change=self._refresh_memo_btn, save=self._save_notes)
+
     def _on_close(self) -> None:
         self._running = False
         self._stop_loop()
         if self.audio is not None:
             self.audio.stop()
         self.destroy()
+
+
+class MemoDialog(ctk.CTkToplevel):
+    """練習メモを1件追加する小ダイアログ（クイックタグ＋自由文）。"""
+
+    def __init__(self, parent: tk.Widget, beat: float, on_save) -> None:
+        super().__init__(parent)
+        self.title("練習メモを追加")
+        self.resizable(False, False)
+        theme.apply_titlebar(self)
+        self._beat = beat
+        self._on_save = on_save
+        pos = f"♪ {beat:.1f} 拍あたり" if beat >= 0 else "位置情報なし"
+        ctk.CTkLabel(self, text=f"この位置にメモ（{pos}）").pack(
+            padx=16, pady=(14, 6), anchor="w")
+        self._tag = ctk.CTkSegmentedButton(self, values=list(practice_notes.QUICK_TAGS))
+        self._tag.set(practice_notes.QUICK_TAGS[0])
+        self._tag.pack(padx=16, pady=4, fill="x")
+        self._entry = ctk.CTkEntry(
+            self, width=380,
+            placeholder_text="気づいたこと（例: ここ指またぎ／テンポ0.75で／サビ暗譜）")
+        self._entry.pack(padx=16, pady=8, fill="x")
+        self._entry.bind("<Return>", lambda e: self._save())
+        row = ctk.CTkFrame(self, fg_color="transparent")
+        row.pack(padx=16, pady=(4, 14), fill="x")
+        ctk.CTkButton(row, text="保存", command=self._save, **theme.BTN_ACCENT).pack(side="right")
+        ctk.CTkButton(row, text="キャンセル", command=self.destroy).pack(side="right", padx=8)
+        self.after(120, lambda: (self.focus_force(), self._entry.focus_set()))
+
+    def _save(self) -> None:
+        self._on_save(self._beat, self._tag.get(), self._entry.get().strip())
+        self.destroy()
+
+
+class MemoListDialog(ctk.CTkToplevel):
+    """現在の曲の練習メモ一覧（削除可）。"""
+
+    def __init__(self, parent: tk.Widget, store: dict, key: str, on_change, save) -> None:
+        super().__init__(parent)
+        self.title("練習メモ一覧")
+        self.geometry("470x430")
+        theme.apply_titlebar(self)
+        self._store = store
+        self._key = key
+        self._on_change = on_change
+        self._save = save
+        ctk.CTkLabel(self, text="この曲の練習メモ",
+                     font=ctk.CTkFont(size=14, weight="bold")).pack(
+            padx=14, pady=(12, 4), anchor="w")
+        self._list = ctk.CTkScrollableFrame(self)
+        self._list.pack(fill="both", expand=True, padx=12, pady=(0, 12))
+        self.after(120, self.focus_force)
+        self._render()
+
+    def _render(self) -> None:
+        for widget in self._list.winfo_children():
+            widget.destroy()
+        notes = practice_notes.get_notes(self._store, self._key)
+        if not notes:
+            ctk.CTkLabel(self._list,
+                         text="まだメモはありません。\n練習中に「💡 メモ」で残せます。",
+                         text_color=theme.pair("subtle"), justify="left").pack(
+                anchor="w", padx=8, pady=8)
+            return
+        for index, note in enumerate(notes):
+            row = ctk.CTkFrame(self._list)
+            row.pack(fill="x", pady=3, padx=2)
+            ctk.CTkLabel(row, text=note.summary(), anchor="w", justify="left",
+                         wraplength=340).pack(side="left", fill="x", expand=True,
+                                              padx=(8, 4), pady=6)
+            ctk.CTkButton(row, text="削除", width=52,
+                          command=lambda i=index: self._delete(i),
+                          **theme.BTN_DANGER).pack(side="right", padx=6)
+
+    def _delete(self, index: int) -> None:
+        if practice_notes.delete_note(self._store, self._key, index):
+            self._save()
+            self._on_change()
+            self._render()

@@ -775,7 +775,8 @@ class App:
         if not score.events:
             messagebox.showwarning("空の楽譜", "練習できる音がありません。")
             return
-        PracticeWindow(self.root, score, self._current_mapping(), audio=self.audio)
+        PracticeWindow(self.root, score, self._current_mapping(), audio=self.audio,
+                       config=self.config)
 
     def _open_export(self) -> None:
         score = self._build_score()
