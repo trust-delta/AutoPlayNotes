@@ -241,7 +241,7 @@ class App:
         self._ocr_menu.add_separator()
         self._ocr_menu.add_command(label="楽譜画像をなぞって入力（トレース）...",
                                    command=self._trace_from_file)
-        self._ocr_menu.add_command(label="五線譜の画像から (OMR・要 oemer)...",
+        self._ocr_menu.add_command(label="五線譜の画像から (OMR・アドオン)...",
                                    command=self._omr_from_file)
         self._ocr_btn = ctk.CTkButton(tools, text="📷 画像から取り込み ▾", width=160,
                                       command=self._post_ocr_menu)
@@ -1041,12 +1041,7 @@ class App:
     # --- 五線譜画像の取り込み（OMR） -------------------------------------------
     def _omr_from_file(self) -> None:
         if not omr.is_available():
-            messagebox.showinfo(
-                "oemer が必要です",
-                "五線譜画像の読み取りには外部ツール oemer (MIT License) が必要です。\n"
-                "Python 環境で\n\n    pip install oemer\n\n"
-                "を実行してください（初回の認識時にモデルを自動取得します）。",
-            )
+            messagebox.showinfo("OMR アドオンが必要です", omr.install_hint())
             return
         path = filedialog.askopenfilename(
             title="五線譜の画像 / PDF を開く",
