@@ -35,10 +35,14 @@ from autoplaynotes.player import PlaybackOptions, Player  # noqa: E402
 from autoplaynotes.win_input import KeySender  # noqa: E402
 
 # BPM 60 → 1 拍 = 1 秒。秒と拍が一致するので読みやすい。
+#
+# 'a' の 1 音目は 2.5 秒まで伸びるが、2.0 秒で同じキーを鳴らし直す。**重ねるのが要点**。
+# 重ならない譜面では切り詰めが起きず、再発音の間隔を測ったつもりで音符の隙間を
+# 測るだけになる（実際そうなっていた）。player はここで 1 音目を 1.975 秒で離す。
 _SCORE = Score(tempo_bpm=60.0, title="probe", events=[
-    NoteEvent(0.0, 1.5, (60,), (1.5,)),    # 1.5 秒の保続音
+    NoteEvent(0.0, 2.5, (60,), (2.5,)),    # 2.5 秒の保続音（2.0 秒で切られるはず）
     NoteEvent(0.0, 0.3, (62,), (0.3,)),    # 0.3 秒
-    NoteEvent(2.0, 0.5, (60,), (0.5,)),    # 同じキーを鳴らし直す
+    NoteEvent(2.0, 0.5, (60,), (0.5,)),    # 同じキーを鳴らし直す（重なる）
 ])
 _MAPPING = KeyMapping(name="probe", note_to_key={60: "a", 62: "s"}, sustain=True)
 _OPTIONS = PlaybackOptions(count_in_seconds=0.0, gate_ms=40.0, retrigger_gap_ms=25.0)
@@ -166,13 +170,34 @@ class Probe:
             print(f"{k2:>4}   {s1:6.3f} → {e1:6.3f}    {s2:6.3f} → {e2:6.3f}   "
                   f"{((e2 - s2) - (e1 - s1)) * 1000:+8.1f} ms{mark}")
 
-        a_spans = [s for s in got if s[0] == "a"]
-        if len(a_spans) >= 2:
-            gap = (a_spans[1][1] - a_spans[0][2]) * 1000
-            ok = gap >= _OPTIONS.retrigger_gap_ms * 0.5
-            print(f"\n同じキーの鳴らし直し: 離してから押すまで {gap:.1f} ms "
-                  f"(設定 {_OPTIONS.retrigger_gap_ms:.0f} ms) {'OK' if ok else '⚠ 潰れている'}")
-        return 0
+        return self._report_retrigger(want, got)
+
+    def _report_retrigger(self, want: list, got: list) -> int:
+        """同じキーの鳴らし直しで、離してから押すまでの間隔が届いているか。
+
+        「25ms 以上なら OK」では、ただ離れた 2 音でも通ってしまう。意図した間隔と
+        実測を突き合わせ、そもそも切り詰めが起きる譜面なのかも確認する。
+        """
+        def gap_ms(spans: list) -> float | None:
+            a = [s for s in spans if s[0] == "a"]
+            return (a[1][1] - a[0][2]) * 1000 if len(a) >= 2 else None
+
+        want_gap, got_gap = gap_ms(want), gap_ms(got)
+        print()
+        if want_gap is None or got_gap is None:
+            print("⚠ 同じキーの鳴らし直しが観測できませんでした。")
+            return 1
+        if want_gap > _OPTIONS.retrigger_gap_ms * 2:
+            print(f"⚠ この譜面では音が重ならず、切り詰めが起きていません（意図の間隔 {want_gap:.1f} ms）。")
+            print("   測っているのは単なる音符の隙間です。プローブの譜面を見直してください。")
+            return 1
+        drift = got_gap - want_gap
+        ok = abs(drift) <= 8.0
+        print(f"同じキーの鳴らし直し: 意図 {want_gap:.1f} ms → 実測 {got_gap:.1f} ms "
+              f"({drift:+.1f} ms) {'OK' if ok else '⚠ 間隔が届いていない'}")
+        if not ok:
+            print("   タイマ分解能が上がっていない可能性があります（win_input.high_resolution_timer）。")
+        return 0 if ok else 1
 
     def _count_repeats(self) -> int:
         """離鍵を挟まずに同じキーの押下が続いた回数。"""
