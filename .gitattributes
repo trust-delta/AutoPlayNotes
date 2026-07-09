@@ -1,0 +1,18 @@
+# 改行コードを作業ツリーでも LF に固定する。
+#
+# Git for Windows のシステム設定は core.autocrlf=true で、チェックアウト時に CRLF へ
+# 変換する。一方 WSL 側の git は autocrlf=false が既定。同じチェックアウト（/mnt/d/...）を
+# 両方から触ると、片方が書いた CRLF をもう片方が「変更あり」と見なし、全ファイルが
+# 差分として現れる。eol=lf を明示すれば、どちらの git も作業ツリーを LF に保つ。
+*               text=auto eol=lf
+
+# バイナリ（改行変換をかけない）
+*.png           binary
+*.jpg           binary
+*.ico           binary
+*.zip           binary
+*.mid           binary
+*.midi          binary
+*.pyd           binary
+*.dll           binary
+*.exe           binary
