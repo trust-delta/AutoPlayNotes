@@ -26,6 +26,7 @@
 
 from __future__ import annotations
 
+from bisect import bisect_left, bisect_right
 from dataclasses import replace
 from typing import Literal
 
@@ -147,6 +148,54 @@ def note_share(score: Score, mapping: KeyMapping, yours: KeySet) -> tuple[int, i
         if mapping.resolve(note) in yours
     )
     return mine, total
+
+
+def suggest_window(
+    score: Score, mapping: KeyMapping, max_fingers: int = 1
+) -> KeySet:
+    """指 max_fingers 本で最も多くの音を弾ける、連続したキーの窓。
+
+    音楽知識ゼロの人の「最初の一歩」。**メロディを当てているのではない。**
+    指の本数を制約に、音が多く集まっている連続領域を選んでいるだけ。
+    たまたまメロディに一致することが多いのは、メロディが密だから。
+    同点なら狭い窓を選ぶ（覚えるキーが少ないほうが易しい）。
+    """
+    layout = keyboard(mapping)
+    if not layout:
+        return frozenset()
+    index = {key: i for i, (key, _pitch) in enumerate(layout)}
+
+    # イベントごとの「使うキーの位置」（昇順）。窓に入る個数＝そのイベントの指の本数。
+    per_event: list[list[int]] = []
+    for event in score.events:
+        keys = {mapping.resolve(note) for note in event.midi_notes}
+        keys.discard(None)
+        if keys:
+            per_event.append(sorted(index[k] for k in keys))  # type: ignore[index]
+    if not per_event:
+        return frozenset()
+
+    counts = [0] * len(layout)
+    for key, count in key_usage(score, mapping).items():
+        counts[index[key]] += count
+    prefix = [0]
+    for count in counts:
+        prefix.append(prefix[-1] + count)
+
+    best: KeySet = frozenset()
+    best_notes, best_width = -1, 0
+    for i in range(len(layout)):
+        for j in range(i, len(layout)):
+            # 窓を広げると指は増えるだけ。上限を超えたらそれ以上広げる意味がない。
+            fingers = max(bisect_right(ev, j) - bisect_left(ev, i) for ev in per_event)
+            if fingers > max_fingers:
+                break
+            notes = prefix[j + 1] - prefix[i]
+            width = j - i
+            if notes > best_notes or (notes == best_notes and width < best_width):
+                best = frozenset(key for key, _pitch in layout[i:j + 1])
+                best_notes, best_width = notes, width
+    return best
 
 
 # --- 同時押しの間引き（難易度の軸ではない・任意の補助） -----------------------
