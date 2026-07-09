@@ -14,6 +14,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from autoplaynotes.keymap import KeyMapping  # noqa: E402
 from autoplaynotes.model import NoteEvent, Score  # noqa: E402
 from autoplaynotes.player import PlaybackOptions, Player  # noqa: E402
+from autoplaynotes.win_input import high_resolution_timer  # noqa: E402
 
 
 class _FakeSender:
@@ -171,6 +172,24 @@ class ScheduleTest(unittest.TestCase):
         actions = _actions(_score(NoteEvent(0.0, 2.0, (60,), (2.0,))), _mapping(), speed=2.0)
         onset, release = _spans(actions)["a"][0]
         self.assertAlmostEqual(release - onset, 1.0)
+
+
+class TimingDefaultsTest(unittest.TestCase):
+    def test_retrigger_gap_exceeds_one_frame_at_60fps(self) -> None:
+        """60fps のゲームは 16.7ms ごとにしかキー状態を見ないことがある。
+
+        1 フレームより短い間隔は丸ごと取りこぼされ、押下エッジでしか発音しない楽器では
+        鳴らし直しが消える。実測でも、既定のタイマ分解能（約 15.6ms）のままでは
+        10ms の間隔が 0ms に潰れた。
+        """
+        self.assertGreaterEqual(PlaybackOptions().retrigger_gap_ms, 1000.0 / 60.0)
+
+    def test_high_resolution_timer_does_not_raise(self) -> None:
+        """winmm が使えない環境でも、例外を投げず単に何もしない。"""
+        with high_resolution_timer():
+            with high_resolution_timer():
+                pass
+
 
 class KeyMappingSustainTest(unittest.TestCase):
     """sustain は保存・読み込み・テキスト編集を通っても失われない。"""

@@ -7,10 +7,11 @@
 
 from __future__ import annotations
 
+import contextlib
 import ctypes
 import time
 from ctypes import wintypes
-from typing import Iterable
+from typing import Iterable, Iterator
 
 # --- Win32 定数 ---------------------------------------------------------------
 KEYEVENTF_EXTENDEDKEY = 0x0001
@@ -94,6 +95,34 @@ _NAMED_VK: dict[str, tuple[int, bool]] = {
     "F7": (0x76, False),
     "F8": (0x77, False),
 }
+
+
+@contextlib.contextmanager
+def high_resolution_timer(period_ms: int = 1) -> Iterator[None]:
+    """このブロックの間だけ、OS のタイマ分解能を上げる。
+
+    Windows の既定分解能は約 15.6ms。演奏スレッドは Event.wait() で次のアクションまで
+    待つため、そのままだと押下・解放が 10ms 強ずつ遅れる。同じキーを鳴らし直すときの
+    間隔（既定 25ms）は分解能より短くなりうるので、これを上げないと「離して押し直す」
+    が同一時刻に潰れ、押下エッジでしか発音しない楽器では音が消える。
+
+    winmm が使えない環境では何もしない（測定できないだけで演奏はできる）。
+    """
+    winmm = None
+    try:
+        candidate = ctypes.WinDLL("winmm")
+        if candidate.timeBeginPeriod(period_ms) == 0:  # TIMERR_NOERROR
+            winmm = candidate
+    except (OSError, AttributeError):  # pragma: no cover - 環境依存
+        winmm = None
+    try:
+        yield
+    finally:
+        if winmm is not None:
+            try:
+                winmm.timeEndPeriod(period_ms)
+            except Exception:  # pragma: no cover - 環境依存
+                pass
 
 
 class UnknownKeyError(ValueError):

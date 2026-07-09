@@ -505,7 +505,7 @@ class App:
             tempo_bpm=tempo_override,
             count_in_seconds=max(0.0, self._read_float(self._countin, 3.0)),
             gate_ms=max(10.0, self._read_float(self._gate, 40.0)),
-            retrigger_gap_ms=max(0.0, self._read_float(self._retrig, 10.0)),
+            retrigger_gap_ms=max(0.0, self._read_float(self._retrig, 25.0)),
             speed=max(0.1, self._read_float(self._speed, 1.0)),
             timing_jitter_ms=max(0.0, self._read_float(self._jitter, 0.0)),
             gate_jitter_pct=max(0.0, self._read_float(self._gatejit, 0.0)),
@@ -1267,7 +1267,7 @@ class App:
         self.config.default_octave = int(self._read_float(self._octave, 4))
         self.config.count_in_seconds = self._read_float(self._countin, 3.0)
         self.config.gate_ms = self._read_float(self._gate, 40.0)
-        self.config.retrigger_gap_ms = self._read_float(self._retrig, 10.0)
+        self.config.retrigger_gap_ms = self._read_float(self._retrig, 25.0)
         self.config.speed = self._read_float(self._speed, 1.0)
         self.config.timing_jitter_ms = self._read_float(self._jitter, 0.0)
         self.config.gate_jitter_pct = self._read_float(self._gatejit, 0.0)

@@ -17,7 +17,7 @@ from typing import Callable
 
 from .keymap import KeyMapping, note_name
 from .model import Score
-from .win_input import KeySender
+from .win_input import KeySender, high_resolution_timer
 
 
 # キーを押し下げる最小時間（秒）。これを下回るとゲーム側が取りこぼす。
@@ -29,7 +29,9 @@ class PlaybackOptions:
     tempo_bpm: float | None = None  # None なら楽譜の BPM を使う
     count_in_seconds: float = 3.0
     gate_ms: float = 40.0  # 最短の押し下げ時間。持続音楽器では音長がこれを上回る
-    retrigger_gap_ms: float = 10.0  # 同じキーを鳴らし直すとき、離してから押すまでの間隔
+    # 同じキーを鳴らし直すとき、離してから押すまでの間隔。60fps のゲームは 16.7ms ごとに
+    # しかキー状態を見ないことがあるので、1 フレームより長く取る。
+    retrigger_gap_ms: float = 25.0
     speed: float = 1.0  # 再生速度倍率
     start_beat: float = 0.0  # この拍から演奏を開始（途中再生）
     # ヒューマナイズ
@@ -183,6 +185,18 @@ class Player:
         self._thread.start()
 
     def _run(
+        self,
+        actions: list[_Action],
+        options: PlaybackOptions,
+        skipped: int,
+        total_beats: float,
+    ) -> None:
+        # 既定のタイマ分解能（約 15.6ms）では、押下・解放が 10ms 強ずつ遅れて
+        # 再発音の間隔が潰れる。演奏中だけ 1ms へ上げる。
+        with high_resolution_timer():
+            self._schedule(actions, options, skipped, total_beats)
+
+    def _schedule(
         self,
         actions: list[_Action],
         options: PlaybackOptions,
