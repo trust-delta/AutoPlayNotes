@@ -9,6 +9,9 @@
    Perfect / Good / Miss ＋ コンボ ＋ スコア。内蔵音声と同期再生。
 2) ステップ（送り）: テンポ・リズムは不問。次に光ったキーを押すと譜面が 1 つ進む。
    指の送り順を覚えるための練習。
+
+対象のゲーム内楽器はキーを押している間だけ鳴るため、長い音は「叩く」だけでなく
+「押し続けて、正しいところで離す」必要がある。リズムモードは押下と離鍵の両方を判定する。
 """
 
 from __future__ import annotations
@@ -29,6 +32,8 @@ _LEAD = 2.0          # 画面上端から判定ラインまで落ちる時間
 _PERFECT = 0.05      # これ以内で Perfect
 _GOOD = 0.13         # これ以内で Good（＝押下ヒットの許容窓）
 _MISS_LATE = 0.16    # 判定ラインをこれ以上過ぎたら見逃し Miss
+_LONG_MIN = 0.25     # これ以上の長さの音は「押し続けて離す」ノーツにする
+_RELEASE_TOL = 0.15  # 音の終わりからこれ以内に離せば成功
 
 # ステップ: 表示
 _STEP_GAP = 62       # ステップ間の縦間隔(px)
@@ -43,6 +48,7 @@ _PAD = 12
 
 _C_PENDING = "#42a5f5"
 _C_HIT = "#43a047"
+_C_HOLD = "#8bc34a"   # 押し続けている最中
 _C_MISS = "#9e9e9e"
 _C_FUTURE = "#2a3a55"
 
@@ -52,15 +58,42 @@ def _fmt_time(sec: float) -> str:
     return f"{int(sec) // 60}:{int(sec) % 60:02d}"
 
 
+def is_long_note(duration_seconds: float) -> bool:
+    """離鍵まで判定する「ロングノート」か。短い音は叩くだけで完結する。"""
+    return duration_seconds >= _LONG_MIN
+
+
+def judge_release(dt: float) -> tuple[str, int]:
+    """離鍵の判定。dt は音の終わりからのずれ（秒。負なら早く離した）。
+
+    早く離せば音が途切れ、離し忘れれば鳴り続ける。どちらも Miss。
+    """
+    if abs(dt) > _RELEASE_TOL:
+        return "Miss", 0
+    if abs(dt) <= _PERFECT:
+        return "Perfect", 100
+    return "Good", 50
+
+
 @dataclass
 class _Note:
     lane: int
     beat: float
     dur_beat: float
-    judged: bool = False
+    judged: bool = False       # 押下を判定済み
     hit: bool = False
     missed: bool = False
+    hold_pending: bool = False  # 押下成功、離鍵待ち
+    hold_ok: bool = False
+    hold_failed: bool = False
     item: int | None = None
+
+    def end_beat(self) -> float:
+        return self.beat + self.dur_beat
+
+    def clear_judgment(self) -> None:
+        self.judged = self.hit = self.missed = False
+        self.hold_pending = self.hold_ok = self.hold_failed = False
 
 
 class PracticeWindow(ctk.CTkToplevel):
@@ -121,10 +154,15 @@ class PracticeWindow(ctk.CTkToplevel):
         self._pos_var = tk.StringVar(value="")
         self._instr = tk.StringVar(value="")
 
+        # ロングノート: レーン -> 離鍵待ちのノーツ。押されているレーンキーの集合。
+        self._held: dict[int, _Note] = {}
+        self._down_chars: set[str] = set()
+
         self._build_ui()
         self._draw_static()
         self._apply_mode_text()
         self.bind("<KeyPress>", self._on_key)
+        self.bind("<KeyRelease>", self._on_key_release)
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         self.after(100, lambda: self.focus_force())
 
@@ -151,11 +189,18 @@ class PracticeWindow(ctk.CTkToplevel):
         for ev in self.score.events:
             if ev.is_rest:
                 continue
-            for midi in ev.midi_notes:
+            # 音域の折り返しで複数の音が同じレーンに落ちることがある。長い方を残す
+            # （player と同じ規則。1 レーンに重なったノーツを 2 つ置くと判定が二重になる）。
+            longest: dict[int, float] = {}
+            for midi, dur in zip(ev.midi_notes, ev.note_durations()):
                 key = self.mapping.resolve(midi)
                 if key is None:
                     continue
-                notes.append(_Note(lane=self._lane_of_key(key), beat=ev.start_beat, dur_beat=ev.duration_beat))
+                lane = self._lane_of_key(key)
+                if dur > longest.get(lane, -1.0):
+                    longest[lane] = dur
+            for lane, dur in longest.items():
+                notes.append(_Note(lane=lane, beat=ev.start_beat, dur_beat=dur))
         notes.sort(key=lambda n: n.beat)
         return notes
 
@@ -281,7 +326,8 @@ class PracticeWindow(ctk.CTkToplevel):
         if self._mode.get() == "step":
             self._instr.set("次に光ったキーを押すと譜面が進みます（テンポ・リズムは自由）。和音は全部押すと進む。 ← / → で送り・戻し")
         else:
-            self._instr.set("ノーツが判定ラインに来た瞬間にキーを叩く。 ← / → で秒数の送り・戻し")
+            self._instr.set("ノーツが判定ラインに来た瞬間にキーを叩く。長いノーツは押し続けて、"
+                            "終わりで離す。 ← / → で秒数の送り・戻し")
 
     def _lane_w(self) -> float:
         n = max(1, len(self._lanes))
@@ -352,6 +398,11 @@ class PracticeWindow(ctk.CTkToplevel):
             self._start_rhythm()
 
     # --- 共通キー入力ディスパッチ --------------------------------------------
+    def _lane_char(self, event: tk.Event) -> str | None:
+        """イベントがレーンのキーなら、その文字を返す。"""
+        ch = (event.char or event.keysym or "").lower()
+        return ch if ch in self._char_to_lane else None
+
     def _on_key(self, event: tk.Event) -> None:
         if event.keysym == "space" and not self._running:
             self._start()
@@ -360,10 +411,25 @@ class PracticeWindow(ctk.CTkToplevel):
             amt = self._seek_amt.get()
             self._seek(-amt if event.keysym == "Left" else amt)
             return
+        ch = self._lane_char(event)
+        if ch is not None:
+            # 押しっぱなしにすると OS がキーリピートを送ってくる。ロングノートは
+            # 押し続けるのが正解なので、リピートを打鍵として扱ってはいけない。
+            if ch in self._down_chars:
+                return
+            self._down_chars.add(ch)
         if self._mode.get() == "step":
             self._on_key_step(event)
         else:
             self._on_key_rhythm(event)
+
+    def _on_key_release(self, event: tk.Event) -> None:
+        ch = self._lane_char(event)
+        if ch is None:
+            return
+        self._down_chars.discard(ch)
+        if self._mode.get() != "step":
+            self._on_release_rhythm(self._char_to_lane[ch])
 
     # --- シーク（両モード共通） ----------------------------------------------
     def _seek(self, delta_sec: float) -> None:
@@ -387,14 +453,12 @@ class PracticeWindow(ctk.CTkToplevel):
             now = time.perf_counter() - self._t0
             new_now = max(0.0, min(now + delta_sec, total))
             self._t0 = time.perf_counter() - new_now
+            self._held.clear()
             for n in self._notes:
                 t = n.beat * spb
+                n.clear_judgment()
                 if t < new_now - _MISS_LATE:
                     n.judged = True
-                else:
-                    n.judged = False
-                    n.hit = False
-                    n.missed = False
             self._rhythm_audio(new_now, self._loop_b if self._loop_active() else None)
             self._pos_var.set(f"{_fmt_time(new_now)} / {_fmt_time(total)}")
             self._staff_cursor(new_now / spb)
@@ -450,8 +514,10 @@ class PracticeWindow(ctk.CTkToplevel):
         if self.audio is not None:
             self.audio.stop()
         self.canvas.delete("note")  # リザルト等の残りを消す
+        self._held.clear()
+        self._down_chars.clear()
         for n in self._notes:
-            n.judged = n.hit = n.missed = False
+            n.clear_judgment()
             if n.item is not None:
                 self.canvas.delete(n.item)
                 n.item = None
@@ -540,12 +606,14 @@ class PracticeWindow(ctk.CTkToplevel):
         b = self._loop_b or 0.0
         spb = self._spb()
         self._t0 = time.perf_counter() - a
+        self._held.clear()
         for n in self._notes:
             t = n.beat * spb
             if t < a - _MISS_LATE:
-                n.judged, n.hit, n.missed = True, False, False
+                n.clear_judgment()
+                n.judged = True
             elif t < b:
-                n.judged, n.hit, n.missed = False, False, False
+                n.clear_judgment()
         self._rhythm_audio(a, b)
         self._after = self.after(16, self._tick)
 
@@ -561,6 +629,13 @@ class PracticeWindow(ctk.CTkToplevel):
             if not note.judged and now - note.beat * spb > _MISS_LATE:
                 note.judged = True
                 note.missed = True
+                self._apply_judgment("Miss", 0)
+        # 離し忘れ（押しっぱなしのまま音の終わりを過ぎた）
+        for lane, note in list(self._held.items()):
+            if now - note.end_beat() * spb > _RELEASE_TOL:
+                del self._held[lane]
+                note.hold_pending = False
+                note.hold_failed = True
                 self._apply_judgment("Miss", 0)
         self._render(now, spb)
         last_hit = (self._notes[-1].beat + self._notes[-1].dur_beat) * spb if self._notes else 0
@@ -588,7 +663,14 @@ class PracticeWindow(ctk.CTkToplevel):
             y_tail = self._y(t_end, now)
             ry1 = y_head
             ry0 = min(y_tail, y_head - 10)
-            color = _C_HIT if note.hit else _C_MISS if note.missed else _C_PENDING
+            if note.hold_pending:
+                color = _C_HOLD
+            elif note.missed or note.hold_failed:
+                color = _C_MISS
+            elif note.hit:
+                color = _C_HIT
+            else:
+                color = _C_PENDING
             if note.item is None:
                 note.item = c.create_rectangle(x0, ry0, x1, ry1, fill=color, outline="")
             else:
@@ -620,6 +702,26 @@ class PracticeWindow(ctk.CTkToplevel):
         best.hit = True
         self._apply_judgment("Perfect" if best_dt <= _PERFECT else "Good", 100 if best_dt <= _PERFECT else 50)
         self._flash_lane(lane)
+        if is_long_note(best.dur_beat * spb):
+            best.hold_pending = True
+            self._held[lane] = best
+
+    def _on_release_rhythm(self, lane: int) -> None:
+        """ロングノートの離鍵を判定する。短い音は押下だけで完結しているので何もしない。"""
+        if not self._running:
+            return
+        note = self._held.pop(lane, None)
+        if note is None:
+            return
+        note.hold_pending = False
+        now = time.perf_counter() - self._t0
+        dt = now - note.end_beat() * self._spb()
+        judgment, points = judge_release(dt)
+        if judgment == "Miss":
+            note.hold_failed = True
+        else:
+            note.hold_ok = True
+        self._apply_judgment(judgment, points)
 
     def _flash_lane(self, lane: int) -> None:
         lw = self._lane_w()
@@ -645,6 +747,8 @@ class PracticeWindow(ctk.CTkToplevel):
     def _finish(self) -> None:
         self._running = False
         self._stop_loop()
+        self._held.clear()
+        self._down_chars.clear()
         total = sum(self._counts.values())
         hits = self._counts["Perfect"] + self._counts["Good"]
         acc = (100.0 * hits / total) if total else 0.0
