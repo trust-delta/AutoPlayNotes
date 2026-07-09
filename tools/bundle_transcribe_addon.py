@@ -48,6 +48,13 @@ def build(args: argparse.Namespace) -> int:
     total_src = sum(_dir_size_mb(e) for e in engines)
     log(f"まとめる: {names}  (展開後 約 {total_src:.0f} MB)")
 
+    repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    notices = os.path.join(repo, "THIRD-PARTY-NOTICES.md")
+    if not os.path.isfile(notices):
+        raise SystemExit(
+            "THIRD-PARTY-NOTICES.md がありません。先に生成してください:\n"
+            "  python tools/gen_third_party_notices.py --addon <omr> --addon <pitch>")
+
     with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as zf:
         for engine, top in zip(engines, names):
             for root, _dirs, files in os.walk(engine):
@@ -57,6 +64,16 @@ def build(args: argparse.Namespace) -> int:
                     arc = os.path.join(top, os.path.relpath(full, engine))
                     zf.write(full, arc)
             log(f"  追加: {top}/ ({_dir_size_mb(engine):.0f} MB)")
+
+        # ライセンス表示は配布物に入っていなければ意味がない
+        zf.write(notices, "THIRD-PARTY-NOTICES.md")
+        licenses = os.path.join(repo, "licenses")
+        count = 0
+        if os.path.isdir(licenses):
+            for name in sorted(os.listdir(licenses)):
+                zf.write(os.path.join(licenses, name), os.path.join("licenses", name))
+                count += 1
+        log(f"  追加: THIRD-PARTY-NOTICES.md ＋ licenses/ ({count} 件)")
 
     log(f"完成: {out}  ({os.path.getsize(out) / (1024 * 1024):.0f} MB)")
     log("買った人は zip 内の各フォルダを AutoPlayNotes.exe と同じ場所に置けば動作します。")
