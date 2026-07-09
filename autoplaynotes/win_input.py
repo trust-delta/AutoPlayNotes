@@ -169,9 +169,18 @@ class KeySender:
             self._scan(k)
 
     def down(self, keys: Iterable[str]) -> None:
+        """キーを押し下げる。
+
+        既に押しているキーは、いったん離してから押し直す。対象の楽器は押下エッジで
+        しか発音しないため、押しっぱなしのまま keydown を重ねても鳴らないうえ、
+        keydown 2 回に keyup 1 回だと、まだ鳴っているはずの音が離されてしまう。
+        本来は Player 側が間隔を空けて解決するので、ここは最後の砦。
+        """
         inputs: list[INPUT] = []
         for k in keys:
             scan, extended = self._scan(k)
+            if k in self._down:
+                inputs.append(_make_input(scan, extended, key_up=True))
             inputs.append(_make_input(scan, extended, key_up=False))
             self._down.add(k)
         _send(inputs)

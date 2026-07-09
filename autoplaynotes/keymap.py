@@ -49,11 +49,17 @@ def name_to_midi(name: str, default_octave: int = 4) -> int:
 
 @dataclass
 class KeyMapping:
-    """1 つのマッピング設定。"""
+    """1 つのマッピング設定。
+
+    sustain は「キーを押している間だけ音が鳴る楽器か」。ピアノ系の楽器は True で、
+    音長どおりキーを押し続ける。撥弦楽器（ゲーム内のリラ等）は押した瞬間に鳴って
+    減衰するだけなので False にし、一定時間のタップで送る。
+    """
 
     name: str
     note_to_key: dict[int, str]
     out_of_range: OutOfRange = "transpose"
+    sustain: bool = True
 
     def resolve(self, midi: int) -> str | None:
         """MIDI ノートを演奏キーへ解決する。演奏不能なら None。"""
@@ -84,6 +90,7 @@ class KeyMapping:
         return {
             "name": self.name,
             "out_of_range": self.out_of_range,
+            "sustain": self.sustain,
             "note_to_key": {str(k): v for k, v in sorted(self.note_to_key.items())},
         }
 
@@ -97,7 +104,12 @@ class KeyMapping:
         if out_of_range not in ("transpose", "nearest", "skip"):
             out_of_range = "transpose"
         name = str(data.get("name", "カスタム"))
-        return cls(name=name, note_to_key=note_to_key, out_of_range=out_of_range)  # type: ignore[arg-type]
+        return cls(  # type: ignore[arg-type]
+            name=name,
+            note_to_key=note_to_key,
+            out_of_range=out_of_range,
+            sustain=bool(data.get("sustain", True)),
+        )
 
     def as_text(self) -> str:
         """マッピング編集用のテキスト表現（'C4 = z' 形式）を返す。"""
@@ -105,7 +117,13 @@ class KeyMapping:
         return "\n".join(lines)
 
     @classmethod
-    def from_text(cls, text: str, name: str = "カスタム", out_of_range: OutOfRange = "transpose") -> "KeyMapping":
+    def from_text(
+        cls,
+        text: str,
+        name: str = "カスタム",
+        out_of_range: OutOfRange = "transpose",
+        sustain: bool = True,
+    ) -> "KeyMapping":
         """'C4 = z' 形式のテキストからマッピングを構築する。"""
         note_to_key: dict[int, str] = {}
         for lineno, line in enumerate(text.splitlines(), start=1):
@@ -120,7 +138,7 @@ class KeyMapping:
             if not key:
                 raise ValueError(f"{lineno} 行目: キーが空です")
             note_to_key[midi] = key
-        return cls(name=name, note_to_key=note_to_key, out_of_range=out_of_range)
+        return cls(name=name, note_to_key=note_to_key, out_of_range=out_of_range, sustain=sustain)
 
 
 def _build(rows: list[tuple[str, int, list[int]]], name: str, out_of_range: OutOfRange) -> KeyMapping:

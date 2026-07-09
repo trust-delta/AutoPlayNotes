@@ -6,6 +6,13 @@
     - monophonic: 各時点で最高音のみ残す（メロディ抽出）
     - octave_shift: 全体をオクターブ単位で移調
 
+音長は note_on/note_off の対から取る（「次の発音まで」ではない）。対象のゲーム内楽器は
+キーを押している間だけ鳴るため、音長は演奏の質そのものになる。休符は音長を伸ばして
+埋めるのではなく、イベント間のギャップとして表現する（書き出し側が休符へ変換する）。
+
+鳴っている同音を再発音した場合は、先行音をその時点で閉じる（後勝ち）。物理キーは状態を
+1 つしか持てないので、同じキーの重なりは表現できない。
+
 mido が未インストールでもアプリ本体は動くよう、実ファイル読み込み時のみ遅延インポートする。
 パート分け・和音統合・単音化などの純ロジックは mido なしで動作する。
 """
@@ -21,6 +28,9 @@ from .model import NoteEvent, Score
 # 和音とみなす同時刻の許容誤差（tick）
 _MERGE_WINDOW_TICKS = 10
 
+# 音長の下限（拍）。tick 上で長さ 0 の音を潰さないための保険。
+_MIN_DURATION_BEATS = 0.05
+
 # General MIDI 音色ファミリー（program // 8）
 _GM_FAMILIES = [
     "ピアノ", "クロマチック打楽器", "オルガン", "ギター",
@@ -29,8 +39,8 @@ _GM_FAMILIES = [
     "シンセFX", "エスニック", "パーカッシブ", "効果音",
 ]
 
-# 内部イベント表現: (track, channel, tick, note)
-_Event = tuple[int, int, int, int]
+# 内部イベント表現: (track, channel, start_tick, note, end_tick)
+_Event = tuple[int, int, int, int, int]
 
 
 def is_available() -> bool:
@@ -82,7 +92,7 @@ class MidiInfo:
 # --- 純ロジック（mido 不要。テスト可能） -------------------------------------
 def _group_parts(events: list[_Event], names: dict[int, str], programs: dict[tuple[int, int], int]) -> list[MidiPart]:
     grouped: dict[tuple[int, int], list[int]] = {}
-    for track, channel, _tick, note in events:
+    for track, channel, _tick, note, _end in events:
         grouped.setdefault((track, channel), []).append(note)
     parts: list[MidiPart] = []
     for key in sorted(grouped):
@@ -112,42 +122,52 @@ def _build_from_events(
     octave_shift: int,
     include_drums: bool,
 ) -> Score:
-    onsets: dict[int, set[int]] = {}
-    for track, channel, tick, note in events:
+    # tick -> {音: 終了 tick}。同 tick に同じ音が重なったら長い方を採る。
+    onsets: dict[int, dict[int, int]] = {}
+    for track, channel, tick, note, end in events:
         if selected_keys is not None:
             if (track, channel) not in selected_keys:
                 continue
         elif channel == 9 and not include_drums:
             continue
         shifted = max(0, min(127, note + 12 * octave_shift))
-        onsets.setdefault(tick, set()).add(shifted)
+        slot = onsets.setdefault(tick, {})
+        if end > slot.get(shifted, -1):
+            slot[shifted] = end
 
     if not onsets:
         return Score(tempo_bpm=tempo_bpm, events=[], title=title)
 
     # 近接する tick を 1 グループ（和音）へ統合
-    groups: list[list] = []  # [group_start_tick, set(notes)]
+    groups: list[list] = []  # [group_start_tick, {note: end_tick}]
     for tick in sorted(onsets):
         if groups and tick - groups[-1][0] <= _MERGE_WINDOW_TICKS:
-            groups[-1][1].update(onsets[tick])
+            merged: dict[int, int] = groups[-1][1]
+            for note, end in onsets[tick].items():
+                if end > merged.get(note, -1):
+                    merged[note] = end
         else:
-            groups.append([tick, set(onsets[tick])])
+            groups.append([tick, dict(onsets[tick])])
 
     base_tick = groups[0][0]
     result: list[NoteEvent] = []
-    for i, (tick, notes) in enumerate(groups):
+    for tick, notes in groups:
         start_beat = (tick - base_tick) / ticks_per_beat
-        if i + 1 < len(groups):
-            duration = (groups[i + 1][0] - tick) / ticks_per_beat
-        else:
-            duration = 1.0
         if monophonic:
-            notes = {max(notes)}
+            top = max(notes)
+            notes = {top: notes[top]}
+        midis = tuple(sorted(notes))
+        # 音長はグループの開始からその音の終了まで（note_off 由来の実音長）
+        durations = tuple(
+            max((notes[note] - tick) / ticks_per_beat, _MIN_DURATION_BEATS)
+            for note in midis
+        )
         result.append(
             NoteEvent(
                 start_beat=start_beat,
-                duration_beat=max(duration, 0.05),
-                midi_notes=tuple(sorted(notes)),
+                duration_beat=max(durations),
+                midi_notes=midis,
+                durations=durations,
             )
         )
     return Score(tempo_bpm=tempo_bpm, events=result, title=title)
@@ -172,6 +192,8 @@ def _read(path: str) -> tuple[int, float, list[_Event], dict[int, str], dict[tup
 
     for track_index, track in enumerate(midi.tracks):
         abs_tick = 0
+        # (channel, note) -> 発音した tick。note_off が来るまで開いたまま。
+        open_notes: dict[tuple[int, int], int] = {}
         for msg in track:
             abs_tick += msg.time
             if msg.type == "set_tempo" and not tempo_found:
@@ -182,7 +204,21 @@ def _read(path: str) -> tuple[int, float, list[_Event], dict[int, str], dict[tup
             elif msg.type == "program_change":
                 programs[(track_index, msg.channel)] = msg.program
             elif msg.type == "note_on" and msg.velocity > 0:
-                events.append((track_index, msg.channel, abs_tick, msg.note))
+                key = (msg.channel, msg.note)
+                # 鳴っている同音を再発音した場合は、ここで先行音を閉じる（後勝ち）
+                start = open_notes.pop(key, None)
+                if start is not None:
+                    events.append((track_index, key[0], start, key[1], abs_tick))
+                open_notes[key] = abs_tick
+            elif msg.type == "note_off" or (msg.type == "note_on" and msg.velocity == 0):
+                key = (msg.channel, msg.note)
+                start = open_notes.pop(key, None)
+                if start is not None:
+                    events.append((track_index, key[0], start, key[1], abs_tick))
+
+        # note_off が来ないまま終わった音は、トラック終端で閉じる
+        for (channel, note), start in open_notes.items():
+            events.append((track_index, channel, start, note, abs_tick))
 
     return ticks_per_beat, tempo_bpm, events, names, programs
 

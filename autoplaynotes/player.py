@@ -20,11 +20,16 @@ from .model import Score
 from .win_input import KeySender
 
 
+# キーを押し下げる最小時間（秒）。これを下回るとゲーム側が取りこぼす。
+_MIN_HOLD_SECONDS = 0.005
+
+
 @dataclass(frozen=True)
 class PlaybackOptions:
     tempo_bpm: float | None = None  # None なら楽譜の BPM を使う
     count_in_seconds: float = 3.0
-    gate_ms: float = 40.0  # 1 音を押し下げる基準時間
+    gate_ms: float = 40.0  # 最短の押し下げ時間。持続音楽器では音長がこれを上回る
+    retrigger_gap_ms: float = 10.0  # 同じキーを鳴らし直すとき、離してから押すまでの間隔
     speed: float = 1.0  # 再生速度倍率
     start_beat: float = 0.0  # この拍から演奏を開始（途中再生）
     # ヒューマナイズ
@@ -73,13 +78,20 @@ class Player:
     def build_actions(
         self, score: Score, mapping: KeyMapping, options: PlaybackOptions
     ) -> tuple[list[_Action], int]:
-        """楽譜からアクション列を生成する。戻り値は (アクション列, スキップ音数)。"""
+        """楽譜からアクション列を生成する。戻り値は (アクション列, スキップ音数)。
+
+        持続音楽器（mapping.sustain）では音長どおりキーを押し続ける。同じキーが
+        時間的に重なった場合は「後勝ち」——先行音を離してから鳴らし直す。物理キーは
+        状態を 1 つしか持てないうえ、対象の楽器は押下エッジでしか発音しないため、
+        離さずに押し直しても鳴らない。
+        """
         bpm = options.tempo_bpm or score.tempo_bpm
         if bpm <= 0:
             raise ValueError("BPM は正の数にしてください")
         speed = options.speed if options.speed > 0 else 1.0
         seconds_per_beat = (60.0 / bpm) / speed
-        gate = max(options.gate_ms / 1000.0, 0.01)
+        min_hold = max(options.gate_ms / 1000.0, _MIN_HOLD_SECONDS)
+        retrigger_gap = max(0.0, options.retrigger_gap_ms / 1000.0)
 
         rng = random.Random(options.seed)
         timing_jitter = max(0.0, options.timing_jitter_ms) / 1000.0
@@ -87,26 +99,13 @@ class Player:
         roll = max(0.0, options.chord_roll_ms) / 1000.0
         start_beat = max(0.0, options.start_beat)
 
-        actions: list[_Action] = []
+        # (key, onset秒, hold秒, 楽譜上の拍)
+        notes: list[tuple[str, float, float, float]] = []
         skipped = 0
         for event in score.events:
             if event.is_rest:
                 continue
             if event.start_beat < start_beat - 1e-9:
-                continue
-            # 低音から順にキーへ解決（重複キーは除去）
-            keys: list[str] = []
-            seen: set[str] = set()
-            for midi in event.midi_notes:
-                key = mapping.resolve(midi)
-                if key is None:
-                    skipped += 1
-                    continue
-                if key in seen:
-                    continue
-                seen.add(key)
-                keys.append(key)
-            if not keys:
                 continue
 
             base = (event.start_beat - start_beat) * seconds_per_beat
@@ -114,20 +113,54 @@ class Player:
                 base += rng.uniform(-timing_jitter, timing_jitter)
             base = max(0.0, base)
 
-            note_seconds = event.duration_beat * seconds_per_beat
-            for i, key in enumerate(keys):
+            # 低音から順にキーへ解決。音域の折り返しで同じキーに落ちた音は長い方を残す。
+            order: list[str] = []
+            longest: dict[str, float] = {}
+            for midi, dur in zip(event.midi_notes, event.note_durations()):
+                key = mapping.resolve(midi)
+                if key is None:
+                    skipped += 1
+                    continue
+                seconds = dur * seconds_per_beat
+                if key not in longest:
+                    order.append(key)
+                    longest[key] = seconds
+                elif seconds > longest[key]:
+                    longest[key] = seconds
+
+            for i, key in enumerate(order):
                 onset = base + (i * roll if roll > 0 else 0.0)
-                hold = min(note_seconds * 0.9, gate) if note_seconds > 0 else gate
+                hold = longest[key] if mapping.sustain else min_hold
                 if gate_jitter > 0:
                     hold *= 1.0 + rng.uniform(-gate_jitter, gate_jitter)
-                # 次の音に食い込まないよう上限を設ける
-                hold = max(0.01, min(hold, max(note_seconds * 0.95, 0.01)))
-                actions.append(_Action(onset, True, (key,), event.start_beat))
-                actions.append(_Action(onset + hold, False, (key,), event.start_beat))
+                notes.append((key, onset, max(hold, min_hold), event.start_beat))
 
+        actions = self._resolve_key_conflicts(notes, retrigger_gap)
         # 時刻順に整列。同時刻なら解放(up)を押下(down)より先に。
         actions.sort(key=lambda a: (a.at, a.is_down))
         return actions, skipped
+
+    @staticmethod
+    def _resolve_key_conflicts(
+        notes: list[tuple[str, float, float, float]], retrigger_gap: float
+    ) -> list[_Action]:
+        """同じキーの押下が重なったら、先行音を次の押下の手前で離す（後勝ち）。"""
+        by_key: dict[str, list[tuple[str, float, float, float]]] = {}
+        for note in notes:
+            by_key.setdefault(note[0], []).append(note)
+
+        actions: list[_Action] = []
+        for key, group in by_key.items():
+            group.sort(key=lambda n: n[1])
+            for i, (_key, onset, hold, beat) in enumerate(group):
+                end = onset + hold
+                if i + 1 < len(group):
+                    next_onset = group[i + 1][1]
+                    # 離してから押すまでに、ゲームが検知できる間隔を空ける
+                    end = min(end, max(onset + _MIN_HOLD_SECONDS, next_onset - retrigger_gap))
+                actions.append(_Action(onset, True, (key,), beat))
+                actions.append(_Action(end, False, (key,), beat))
+        return actions
 
     def play(self, score: Score, mapping: KeyMapping, options: PlaybackOptions) -> None:
         if self.is_playing:

@@ -29,7 +29,8 @@ class AppConfig:
     tempo_bpm: float = 120.0
     default_octave: int = 4
     count_in_seconds: float = 3.0
-    gate_ms: float = 40.0
+    gate_ms: float = 40.0  # 最短の押し下げ時間。持続音楽器では音長がこれを上回る
+    retrigger_gap_ms: float = 10.0  # 同じキーを鳴らし直すとき、離してから押すまでの間隔
     speed: float = 1.0
     # ヒューマナイズ
     timing_jitter_ms: float = 0.0

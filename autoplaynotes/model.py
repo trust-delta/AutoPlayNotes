@@ -14,15 +14,37 @@ class NoteEvent:
     """同時に発音する音（和音）のまとまり。
 
     midi_notes が空タプルの場合は休符を表す。
+
+    和音の中でも音の長さは揃わない（左手が保続音を伸ばし、その上で右手が刻む、など）。
+    durations は midi_notes と同じ並びで音ごとの長さを持つ。空なら全音が duration_beat。
+    duration_beat はイベントの外延（最長の音）で、譜面の描画や total_beats が使う。
     """
 
     start_beat: float
     duration_beat: float
     midi_notes: tuple[int, ...]
+    durations: tuple[float, ...] = ()
+
+    def __post_init__(self) -> None:
+        if self.durations and len(self.durations) != len(self.midi_notes):
+            raise ValueError(
+                f"durations は midi_notes と同じ長さである必要があります: "
+                f"{len(self.durations)} != {len(self.midi_notes)}"
+            )
 
     @property
     def is_rest(self) -> bool:
         return len(self.midi_notes) == 0
+
+    def note_durations(self) -> tuple[float, ...]:
+        """midi_notes と同じ並びの音長。
+
+        durations が空、または編集で midi_notes と長さがずれた場合は
+        duration_beat による一様な長さへフォールバックする。
+        """
+        if len(self.durations) == len(self.midi_notes):
+            return self.durations
+        return tuple(self.duration_beat for _ in self.midi_notes)
 
 
 def sequential_durations(events: list[NoteEvent]) -> list[tuple[NoteEvent, float]]:

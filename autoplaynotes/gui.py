@@ -374,8 +374,14 @@ class App:
         self._tempo = self._add_field(params, "テンポ(BPM)", self.config.tempo_bpm, 0, var=self._tempo_var)
         self._octave = self._add_field(params, "既定オクターブ", self.config.default_octave, 2)
         self._countin = self._add_field(params, "開始前カウント(秒)", self.config.count_in_seconds, 4)
-        self._gate = self._add_field(params, "押下時間(ms)", self.config.gate_ms, 6)
+        self._gate = self._add_field(params, "最短押下時間(ms)", self.config.gate_ms, 6)
         self._speed = self._add_field(params, "速度倍率", self.config.speed, 8)
+        self._retrig = self._add_field(params, "再発音の間隔(ms)", self.config.retrigger_gap_ms, 0, row=1)
+        ctk.CTkLabel(
+            params, text_color=theme.pair("subtle"),
+            text=("持続音の楽器では、音長どおりキーを押し続けます（楽器の種類はキー割り当てで設定）。"
+                  "同じキーを鳴らし直すときは、いったん離してから押し直します。"),
+        ).grid(row=2, column=0, columnspan=10, sticky="w", padx=14, pady=(2, 0))
 
         human_box = self._section(parent, "自然さ（ヒューマナイズ）")
         human_box.pack(fill="x", pady=(0, 8))
@@ -422,14 +428,14 @@ class App:
             pass
 
     def _add_field(self, parent: ctk.CTkFrame, label: str, value: object, col: int,
-                   var: tk.StringVar | None = None) -> ctk.CTkEntry:
-        ctk.CTkLabel(parent, text=label).grid(row=0, column=col, sticky="e", padx=(14, 4), pady=4)
+                   var: tk.StringVar | None = None, row: int = 0) -> ctk.CTkEntry:
+        ctk.CTkLabel(parent, text=label).grid(row=row, column=col, sticky="e", padx=(14, 4), pady=4)
         if var is not None:
             entry = ctk.CTkEntry(parent, width=64, justify="center", textvariable=var)
         else:
             entry = ctk.CTkEntry(parent, width=64, justify="center")
             entry.insert(0, str(value))
-        entry.grid(row=0, column=col + 1, sticky="w", pady=4)
+        entry.grid(row=row, column=col + 1, sticky="w", pady=4)
         return entry
 
     # --- ホットキー -----------------------------------------------------------
@@ -499,6 +505,7 @@ class App:
             tempo_bpm=tempo_override,
             count_in_seconds=max(0.0, self._read_float(self._countin, 3.0)),
             gate_ms=max(10.0, self._read_float(self._gate, 40.0)),
+            retrigger_gap_ms=max(0.0, self._read_float(self._retrig, 10.0)),
             speed=max(0.1, self._read_float(self._speed, 1.0)),
             timing_jitter_ms=max(0.0, self._read_float(self._jitter, 0.0)),
             gate_jitter_pct=max(0.0, self._read_float(self._gatejit, 0.0)),
@@ -1227,7 +1234,10 @@ class App:
 
     def _show_mapping(self) -> None:
         mapping = self._current_mapping()
-        self._log(f"--- 現在の割り当て『{mapping.name}』/ 音域外: {mapping.out_of_range} ---")
+        sustain = "持続音（押している間鳴る）" if mapping.sustain else "撥弦（弾いた瞬間に鳴る）"
+        self._log(
+            f"--- 現在の割り当て『{mapping.name}』/ 音域外: {mapping.out_of_range} / 発音: {sustain} ---"
+        )
         for line in mapping.as_text().splitlines():
             self._log(line)
 
@@ -1257,6 +1267,7 @@ class App:
         self.config.default_octave = int(self._read_float(self._octave, 4))
         self.config.count_in_seconds = self._read_float(self._countin, 3.0)
         self.config.gate_ms = self._read_float(self._gate, 40.0)
+        self.config.retrigger_gap_ms = self._read_float(self._retrig, 10.0)
         self.config.speed = self._read_float(self._speed, 1.0)
         self.config.timing_jitter_ms = self._read_float(self._jitter, 0.0)
         self.config.gate_jitter_pct = self._read_float(self._gatejit, 0.0)
@@ -1367,6 +1378,18 @@ class MappingEditor(ctk.CTkToplevel):
         ctk.CTkLabel(oor_row, text="transpose=移調 / nearest=最寄り音 / skip=無視",
                      text_color=theme.pair("subtle")).pack(side="left")
 
+        sustain_row = ctk.CTkFrame(self, fg_color="transparent")
+        sustain_row.pack(fill="x", padx=14, pady=(0, 6))
+        self._sustain = tk.BooleanVar(value=mapping.sustain)
+        ctk.CTkCheckBox(
+            sustain_row, text="押している間ずっと鳴る楽器（ピアノ系）", variable=self._sustain,
+            onvalue=True, offvalue=False,
+        ).pack(side="left")
+        ctk.CTkLabel(
+            sustain_row, text_color=theme.pair("subtle"),
+            text="オフ＝弾いた瞬間に鳴って減衰する楽器（撥弦系）。音長ぶん押し続けません。",
+        ).pack(side="left", padx=8)
+
         self._text = ctk.CTkTextbox(self, font=(theme.FONT_MONO, 13), undo=True)
         self._text.pack(fill="both", expand=True, padx=14, pady=6)
         self._text.insert("1.0", mapping.as_text())
@@ -1391,7 +1414,9 @@ class MappingEditor(ctk.CTkToplevel):
         name = self._name.get().strip() or "カスタム"
         try:
             mapping = KeyMapping.from_text(
-                self._text.get("1.0", "end"), name=name, out_of_range=self._oor.get()  # type: ignore[arg-type]
+                self._text.get("1.0", "end"), name=name,
+                out_of_range=self._oor.get(),  # type: ignore[arg-type]
+                sustain=self._sustain.get(),
             )
         except Exception as exc:
             messagebox.showerror("入力エラー", str(exc), parent=self)

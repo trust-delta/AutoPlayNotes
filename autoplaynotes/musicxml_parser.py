@@ -319,16 +319,20 @@ def build_score(
     for group in groups:
         if monophonic:
             top = max(group, key=lambda n: n.midi)
-            midis: tuple[int, ...] = (top.midi,)
-            duration = top.duration
-        else:
-            midis = tuple(sorted({n.midi for n in group}))
-            duration = max(n.duration for n in group)
+            group = [top]
+        # 同じ音高が重複する場合は長い方を残す（音ごとの音長を保つ）
+        longest: dict[int, float] = {}
+        for note in group:
+            if note.duration > longest.get(note.midi, -1.0):
+                longest[note.midi] = note.duration
+        midis: tuple[int, ...] = tuple(sorted(longest))
+        durations = tuple(max(longest[midi], 0.05) for midi in midis)
         events.append(
             NoteEvent(
                 start_beat=group[0].start - origin,
-                duration_beat=max(duration, 0.05),
+                duration_beat=max(durations),
                 midi_notes=midis,
+                durations=durations,
             )
         )
     return Score(tempo_bpm=tempo, events=events, title=title)

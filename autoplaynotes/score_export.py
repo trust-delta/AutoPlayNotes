@@ -46,8 +46,9 @@ def score_to_midi_bytes(score: Score, bpm: float | None = None) -> bytes:
         if event.is_rest:
             continue
         on = round(event.start_beat * _TPQ)
-        off = max(on + 1, round((event.start_beat + event.duration_beat) * _TPQ))
-        for midi in event.midi_notes:
+        # 和音の中でも音長は揃わないので、音ごとに note_off を打つ
+        for midi, dur in zip(event.midi_notes, event.note_durations()):
+            off = max(on + 1, round((event.start_beat + dur) * _TPQ))
             m = max(0, min(127, midi))
             raw.append((on, 1, 0x90, m, _VELOCITY))
             raw.append((off, 0, 0x80, m, 0))
