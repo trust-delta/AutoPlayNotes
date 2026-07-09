@@ -125,6 +125,55 @@ class PerNoteDurationTest(unittest.TestCase):
         self.assertEqual(score.events[0].durations, (4.0, 1.0))
 
 
+class NotMelodyExtractionTest(unittest.TestCase):
+    """thin_chord は同時押しを減らすだけで、声部（メロディ）を追わない。
+
+    ここは「バグ」ではなく仕様。skyline 法でメロディを取ろうとすると下記のとおり
+    壊れるため、意図的にやっていない。将来これを「メロディ抽出」と呼び直そうと
+    する人が現れたら、このテストが何を失うかを見せる。
+    """
+
+    def test_arpeggio_is_untouched(self) -> None:
+        """分散和音（アルベルティ・バス）は各イベントが単音。減らす対象が無い。"""
+        alberti = Score(events=[
+            NoteEvent(i * 0.5, 0.5, (n,), (0.5,))
+            for i, n in enumerate([48, 55, 52, 55])
+        ])
+        thinned = difficulty.thin_score(alberti, 1)
+        self.assertEqual(
+            [e.midi_notes for e in thinned.events], [(48,), (55,), (52,), (55,)]
+        )
+
+    def test_sustained_melody_is_lost_after_its_onset(self) -> None:
+        """保続するメロディは発音時のイベントにしか無い。以降は伴奏の最高音が残る。"""
+        score = Score(events=[
+            NoteEvent(0.0, 2.0, (48, 72), (0.5, 2.0)),  # 伴奏 C3 ＋ 保続するメロディ C5
+            NoteEvent(0.5, 0.5, (55,), (0.5,)),         # 伴奏だけ
+            NoteEvent(1.0, 0.5, (52,), (0.5,)),
+        ])
+        thinned = difficulty.thin_score(score, 1)
+        self.assertEqual([e.midi_notes for e in thinned.events], [(72,), (55,), (52,)])
+        # メロディ C5 は 1 回しか現れない。旋律線は追えていない。
+        self.assertEqual(sum(72 in e.midi_notes for e in thinned.events), 1)
+
+    def test_inner_voice_melody_is_dropped(self) -> None:
+        """内声にメロディがあれば当然残らない。最高音を採るとはそういうこと。"""
+        score = Score(events=[NoteEvent(0.0, 1.0, (48, 60, 79), (1.0, 1.0, 1.0))])
+        self.assertEqual(difficulty.thin_score(score, 1).events[0].midi_notes, (79,))
+
+    def test_what_it_does_guarantee_is_simultaneity(self) -> None:
+        """保証しているのはただ 1 つ、同時に押すキーの数。"""
+        score = Score(events=[
+            NoteEvent(0.0, 1.0, (48, 55, 60, 64, 67), (1.0,) * 5),
+            NoteEvent(1.0, 1.0, (50, 62), (1.0, 1.0)),
+        ])
+        for max_notes in (1, 2, 3):
+            with self.subTest(max_notes=max_notes):
+                thinned = difficulty.thin_score(score, max_notes)
+                for event in thinned.events:
+                    self.assertLessEqual(len(event.midi_notes), max_notes)
+
+
 class LadderTest(unittest.TestCase):
     def test_indices_are_contiguous_from_zero(self) -> None:
         self.assertEqual([lv.index for lv in difficulty.LADDER], [0, 1, 2, 3, 4])

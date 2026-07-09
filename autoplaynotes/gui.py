@@ -1469,7 +1469,8 @@ class MidiTrackDialog(ctk.CTkToplevel):
         options.pack(fill="x", padx=14, pady=6)
         self._mono = tk.BooleanVar(value=monophonic)
         ctk.CTkCheckBox(
-            options, text="単音化（各時点で最高音だけ＝メロディ抽出）", variable=self._mono,
+            options, text="単音化（各時点で最高音だけ残す。声部は追わないのでメロディ抽出ではありません）",
+            variable=self._mono,
             onvalue=True, offvalue=False,
         ).pack(anchor="w")
         oct_row = ctk.CTkFrame(options, fg_color="transparent")
