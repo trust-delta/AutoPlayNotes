@@ -107,6 +107,7 @@ class App:
         self._mapping_var = tk.StringVar(value=self.config.active_mapping)
         self._status_var = tk.StringVar(value="待機中")
         self._loop_var = tk.BooleanVar(value=self.config.loop)
+        self._assist = tk.BooleanVar(value=self.config.assist_play)
         self._tempo_var = tk.StringVar(value=f"{self.config.tempo_bpm:g}")
 
         root.title("AutoPlayNotes - 楽譜オートプレイヤー")
@@ -282,6 +283,8 @@ class App:
             state="disabled", width=130, height=36, **theme.BTN_DANGER,
         )
         self._stop_btn.pack(side="left", padx=(0, 6))
+        ctk.CTkCheckBox(controls, text="補助演奏", variable=self._assist,
+                        onvalue=True, offvalue=False).pack(side="left", padx=(6, 10))
         audio_state = "normal" if self.audio.is_available() else "disabled"
         ctk.CTkButton(controls, text="🔊 音で試聴", width=110, height=36,
                       command=self._audio_preview, state=audio_state).pack(side="left", padx=(0, 6))
@@ -294,6 +297,12 @@ class App:
         ctk.CTkLabel(tempo_bar, text="テンポ(BPM)").pack(side="left", padx=(0, 6))
         ctk.CTkEntry(tempo_bar, width=64, justify="center",
                      textvariable=self._tempo_var).pack(side="left")
+
+        ctk.CTkLabel(
+            parent, text_color=theme.pair("subtle"), justify="left",
+            text=("補助演奏: 「🎹 演奏範囲」で選んだ範囲は自分で弾き、アプリは範囲外だけを送ります。"
+                  "自動演奏と同じくゲームへキーが飛びます（自己責任）。"),
+        ).pack(anchor="w", padx=6, pady=(0, 4))
 
     def _on_source_select(self, label: str) -> None:
         self._source.set(_LABEL_SOURCES.get(label, "text"))
@@ -539,6 +548,32 @@ class App:
         self._log(f"演奏準備: {title} / {len(score.events)} 音 / {score.tempo_bpm:.0f} BPM{where}")
         self._begin(score, self._options(start_beat))
 
+    def _assist_score(self, score: Score, mapping: KeyMapping) -> Score | None:
+        """補助演奏用に、アプリが送るぶん（演奏範囲の外）だけを取り出す。
+
+        窓で分ける限り、あなたが押すキーとアプリが送るキーは全曲を通じて素になる。
+        同じ物理キーを取り合わないので、両者が同時にゲームへ入力できる。
+        """
+        window = keywindow.load_window(self.config, score, mapping)
+        if window is None:
+            messagebox.showwarning(
+                "演奏範囲が未設定",
+                "補助演奏には、自分で弾く範囲が必要です。\n"
+                "「🎹 演奏範囲」で選んでください。")
+            return None
+        mine, theirs = difficulty.split(score, mapping, window)
+        yours = sum(len(e.midi_notes) for e in mine.events)
+        theirs_n = sum(len(e.midi_notes) for e in theirs.events)
+        if theirs_n == 0:
+            messagebox.showwarning(
+                "アプリが弾く音がありません",
+                "演奏範囲が曲全体を覆っています。補助演奏では、アプリは範囲外だけを送ります。")
+            return None
+        label = keywindow.describe_window(mapping, window)
+        self._log(f"補助演奏: あなたは {label} の {yours} 音を弾いてください。"
+                  f"アプリは範囲外の {theirs_n} 音を送ります。")
+        return theirs
+
     def _begin(self, score: Score, options: PlaybackOptions) -> bool:
         """検証してプレイヤーを起動する共通処理。成功なら True。"""
         mapping = self._current_mapping()
@@ -547,6 +582,11 @@ class App:
         except Exception as exc:
             messagebox.showerror("キー設定エラー", f"割り当てキーに問題があります: {exc}")
             return False
+        if self._assist.get():
+            assisted = self._assist_score(score, mapping)
+            if assisted is None:
+                return False
+            score = assisted
         self._save_config_from_ui()
         self._start_btn.configure(state="disabled")
         self._stop_btn.configure(state="normal")
@@ -754,6 +794,7 @@ class App:
     def _persist_playlist(self) -> None:
         self.config.playlist = [it.to_dict() for it in self.playlist.items]
         self.config.loop = self._loop_var.get()
+        self.config.assist_play = self._assist.get()
         try:
             self.config.save()
         except Exception:

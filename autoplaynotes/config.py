@@ -41,6 +41,8 @@ class AppConfig:
     hotkey_stop: str = "F10"
     loop: bool = False
     dark: bool = True
+    # 補助演奏: 演奏範囲は自分で弾き、アプリは範囲外だけをゲームへ送る（グレー）
+    assist_play: bool = False
     # 初回起動時のみようこそ画面を表示する
     first_run: bool = True
     # ユーザー定義マッピング（プリセットを上書き / 追加）
