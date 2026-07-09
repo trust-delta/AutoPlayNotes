@@ -137,7 +137,12 @@ class Player:
                     hold *= 1.0 + rng.uniform(-gate_jitter, gate_jitter)
                 notes.append((key, onset, max(hold, min_hold), event.start_beat))
 
-        actions = self._resolve_key_conflicts(notes, retrigger_gap)
+        actions, merged = self._resolve_key_conflicts(notes, retrigger_gap)
+        if merged > 0:
+            self._status(
+                f"注意: {merged} 個の音は前の音と近すぎるため統合しました"
+                f"（離して押し直す間隔 {options.retrigger_gap_ms:.0f}ms を確保できません）"
+            )
         # 時刻順に整列。同時刻なら解放(up)を押下(down)より先に。
         actions.sort(key=lambda a: (a.at, a.is_down))
         return actions, skipped
@@ -145,24 +150,41 @@ class Player:
     @staticmethod
     def _resolve_key_conflicts(
         notes: list[tuple[str, float, float, float]], retrigger_gap: float
-    ) -> list[_Action]:
-        """同じキーの押下が重なったら、先行音を次の押下の手前で離す（後勝ち）。"""
-        by_key: dict[str, list[tuple[str, float, float, float]]] = {}
-        for note in notes:
-            by_key.setdefault(note[0], []).append(note)
+    ) -> tuple[list[_Action], int]:
+        """同じキーの押下が重なったら、先行音を次の押下の手前で離す（後勝ち）。
+
+        戻り値は (アクション列, 統合した押下の数)。
+
+        押下が近すぎて「離して、間隔を空けて、押し直す」余地が無い場合は、
+        1 つの押しっぱなしへ統合する。無理に離すと、押下時間も間隔も 1 フレーム
+        （60fps で 16.7ms）を下回り、ゲームはどちらも観測できないまま音を失う。
+        さらに解放が次の押下より後ろへ回り、down → down → up → up の順になって
+        後続の音まで切ってしまう。
+        """
+        by_key: dict[str, list[tuple[float, float, float]]] = {}
+        for key, onset, hold, beat in notes:
+            by_key.setdefault(key, []).append((onset, hold, beat))
 
         actions: list[_Action] = []
+        merged = 0
         for key, group in by_key.items():
-            group.sort(key=lambda n: n[1])
-            for i, (_key, onset, hold, beat) in enumerate(group):
-                end = onset + hold
-                if i + 1 < len(group):
-                    next_onset = group[i + 1][1]
-                    # 離してから押すまでに、ゲームが検知できる間隔を空ける
-                    end = min(end, max(onset + _MIN_HOLD_SECONDS, next_onset - retrigger_gap))
+            group.sort(key=lambda n: n[0])
+
+            spans: list[list[float]] = []  # [onset, end, beat]
+            for onset, hold, beat in group:
+                if spans and onset - spans[-1][0] <= _MIN_HOLD_SECONDS + retrigger_gap:
+                    spans[-1][1] = max(spans[-1][1], onset + hold)  # 鳴らし直せない → 統合
+                    merged += 1
+                    continue
+                spans.append([onset, onset + hold, beat])
+
+            for i, (onset, end, beat) in enumerate(spans):
+                if i + 1 < len(spans):
+                    # 統合済みなので、間隔を引いても必ず押下より後ろに残る
+                    end = min(end, spans[i + 1][0] - retrigger_gap)
                 actions.append(_Action(onset, True, (key,), beat))
                 actions.append(_Action(end, False, (key,), beat))
-        return actions
+        return actions, merged
 
     def play(self, score: Score, mapping: KeyMapping, options: PlaybackOptions) -> None:
         if self.is_playing:

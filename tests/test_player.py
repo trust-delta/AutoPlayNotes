@@ -140,6 +140,95 @@ class RetriggerTest(unittest.TestCase):
         self.assertAlmostEqual(spans[0][1], 0.99)
 
 
+class NearCollisionTest(unittest.TestCase):
+    """同じキーの押下が近すぎるとき、鳴らし直す余地が無い。"""
+
+    def _assert_alternates(self, actions: list) -> None:
+        """キーごとに down / up が必ず交互で、押下時間が正であること。
+
+        崩れると win_input が押しっぱなしのキーを二重に押し、余った up が
+        後続の音を切る。ここが player の最も壊れやすい不変条件。
+        """
+        per_key: dict[str, list] = {}
+        for a in actions:
+            per_key.setdefault(a.keys[0], []).append(a)
+        for key, seq in per_key.items():
+            expect_down = True
+            last_at = float("-inf")
+            for a in seq:
+                self.assertEqual(a.is_down, expect_down, f"key {key!r} の down/up が交互でない")
+                if not a.is_down:
+                    self.assertGreater(a.at, last_at, f"key {key!r} の押下時間が 0 以下")
+                last_at = a.at
+                expect_down = not expect_down
+            self.assertFalse(expect_down is False, f"key {key!r} が押しっぱなし")
+
+    def test_attacks_too_close_merge_into_one_hold(self) -> None:
+        """2.5ms 差の再発音は、離す隙が無いので 1 つの押しっぱなしにする。"""
+        actions = _actions(
+            _score(NoteEvent(0.00, 0.5, (60,), (0.5,)), NoteEvent(0.02, 0.5, (60,), (0.5,))),
+            _mapping(),
+            speed=8.0,
+            retrigger_gap_ms=25.0,
+        )
+        self._assert_alternates(actions)
+        spans = _spans(actions)["a"]
+        self.assertEqual(len(spans), 1)
+        self.assertAlmostEqual(spans[0][0], 0.0)
+        self.assertAlmostEqual(spans[0][1], 0.0025 + 0.5 / 8.0)  # 後続の音の終わりまで伸びる
+
+    def test_attacks_within_one_frame_merge(self) -> None:
+        """10ms 差。1 フレーム(16.7ms)より短く、離して押し直しても観測されない。"""
+        actions = _actions(
+            _score(NoteEvent(0.0, 0.5, (60,), (0.5,)), NoteEvent(0.01, 0.5, (60,), (0.5,))),
+            _mapping(),
+            retrigger_gap_ms=25.0,
+        )
+        self._assert_alternates(actions)
+        self.assertEqual(len(_spans(actions)["a"]), 1)
+
+    def test_attacks_with_room_still_retrigger(self) -> None:
+        """余地があるなら統合せず、ちゃんと離して押し直す。"""
+        actions = _actions(
+            _score(NoteEvent(0.0, 0.5, (60,), (0.5,)), NoteEvent(0.5, 0.5, (60,), (0.5,))),
+            _mapping(),
+            retrigger_gap_ms=25.0,
+        )
+        self._assert_alternates(actions)
+        spans = _spans(actions)["a"]
+        self.assertEqual(len(spans), 2)
+        self.assertAlmostEqual(spans[1][0] - spans[0][1], 0.025)
+
+    def test_merging_is_reported_not_silent(self) -> None:
+        """統合は音を 1 つ消す。黙って落とさず、必ず知らせる。"""
+        messages: list[str] = []
+        player = Player(_FakeSender(), on_status=messages.append)  # type: ignore[arg-type]
+        player.build_actions(
+            _score(NoteEvent(0.0, 0.5, (60,), (0.5,)), NoteEvent(0.01, 0.5, (60,), (0.5,))),
+            _mapping(),
+            PlaybackOptions(gate_ms=40.0, retrigger_gap_ms=25.0),
+        )
+        self.assertTrue(any("統合" in m for m in messages), messages)
+
+    def test_no_message_when_nothing_is_merged(self) -> None:
+        messages: list[str] = []
+        player = Player(_FakeSender(), on_status=messages.append)  # type: ignore[arg-type]
+        player.build_actions(
+            _score(NoteEvent(0.0, 0.5, (60,), (0.5,)), NoteEvent(1.0, 0.5, (60,), (0.5,))),
+            _mapping(),
+            PlaybackOptions(gate_ms=40.0, retrigger_gap_ms=25.0),
+        )
+        self.assertEqual(messages, [])
+
+    def test_dense_repeats_never_break_the_invariant(self) -> None:
+        events = [NoteEvent(i * 0.02, 0.5, (60, 62), (0.5, 0.5)) for i in range(12)]
+        for speed in (0.5, 1.0, 4.0, 16.0):
+            with self.subTest(speed=speed):
+                self._assert_alternates(
+                    _actions(_score(*events), _mapping(), speed=speed, retrigger_gap_ms=25.0)
+                )
+
+
 class ScheduleTest(unittest.TestCase):
     def test_rests_produce_no_actions(self) -> None:
         self.assertEqual(_actions(_score(NoteEvent(0.0, 1.0, ())), _mapping()), [])
