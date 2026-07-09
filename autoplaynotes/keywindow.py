@@ -18,8 +18,10 @@ from typing import Callable
 import customtkinter as ctk
 
 from . import difficulty, theme
+from .config import AppConfig
 from .keymap import KeyMapping, note_name
 from .model import Score
+from .practice_notes import song_key
 
 _BAR_H = 96          # 棒グラフの領域の高さ
 _KEY_H = 58          # 鍵の高さ
@@ -35,6 +37,38 @@ _WHITE = {0, 2, 4, 5, 7, 9, 11}
 _K_WHITE, _K_WHITE_ON = "#e8ebf1", "#a9c6ff"
 _K_BLACK, _K_BLACK_ON = "#2a2f3a", "#31589e"
 _K_TEXT_ON_WHITE, _K_TEXT_ON_BLACK = "#1f2530", "#e7eaf0"
+
+
+# --- 曲ごとの保存（練習メモと同じ曲キーに相乗り） -----------------------------
+def window_key(score: Score) -> str:
+    return song_key(score.title, len(score.events))
+
+
+def load_window(config: AppConfig, score: Score, mapping: KeyMapping) -> frozenset[str] | None:
+    """保存された演奏範囲。未設定なら None（＝初めてなので選んでもらう）。
+
+    キー割り当てを切り替えると、保存されたキー名が今のマッピングに存在しないことがある。
+    その場合も None を返して選び直してもらう（勝手に狭い範囲で練習させない）。
+    """
+    saved = config.key_windows.get(window_key(score))
+    if not saved:
+        return None
+    window = frozenset(saved) & difficulty.full_window(mapping)
+    return window or None
+
+
+def save_window(config: AppConfig, score: Score, keys: frozenset[str]) -> None:
+    config.key_windows[window_key(score)] = sorted(keys)
+
+
+def describe_window(mapping: KeyMapping, keys: frozenset[str]) -> str:
+    """『C4〜A4（6鍵）』。全鍵なら『原曲どおり』。"""
+    if not keys:
+        return "なし"
+    if keys == difficulty.full_window(mapping):
+        return "原曲どおり"
+    pitches = sorted(p for k, p in difficulty.keyboard(mapping) if k in keys)
+    return f"{note_name(pitches[0])}〜{note_name(pitches[-1])}（{len(keys)}鍵）"
 
 
 class KeyWindowDialog(ctk.CTkToplevel):

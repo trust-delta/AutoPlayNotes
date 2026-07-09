@@ -98,9 +98,10 @@ class _Note:
 
 class PracticeWindow(ctk.CTkToplevel):
     def __init__(self, parent: tk.Widget, score: Score, mapping: KeyMapping, audio=None,
-                 config=None) -> None:
+                 config=None, range_label: str = "") -> None:
         super().__init__(parent)
-        self.title("練習モード")
+        self.title(f"練習モード — {range_label}" if range_label else "練習モード")
+        self._range_label = range_label
         self.resizable(False, False)
         theme.apply_titlebar(self)
         self.score = score
@@ -324,10 +325,13 @@ class PracticeWindow(ctk.CTkToplevel):
 
     def _apply_mode_text(self) -> None:
         if self._mode.get() == "step":
-            self._instr.set("次に光ったキーを押すと譜面が進みます（テンポ・リズムは自由）。和音は全部押すと進む。 ← / → で送り・戻し")
+            text = "次に光ったキーを押すと譜面が進みます（テンポ・リズムは自由）。和音は全部押すと進む。 ← / → で送り・戻し"
         else:
-            self._instr.set("ノーツが判定ラインに来た瞬間にキーを叩く。長いノーツは押し続けて、"
-                            "終わりで離す。 ← / → で秒数の送り・戻し")
+            text = ("ノーツが判定ラインに来た瞬間にキーを叩く。長いノーツは押し続けて、"
+                    "終わりで離す。 ← / → で秒数の送り・戻し")
+        if self._range_label:
+            text += f"　｜　演奏範囲: {self._range_label}"
+        self._instr.set(text)
 
     def _lane_w(self) -> float:
         n = max(1, len(self._lanes))

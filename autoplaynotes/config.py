@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
@@ -48,6 +49,8 @@ class AppConfig:
     playlist: list[dict[str, Any]] = field(default_factory=list)
     # 練習メモ（曲キー -> メモ dict のリスト。practice_notes モジュール参照）
     practice_notes: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
+    # 演奏範囲（曲キー -> 自分で弾くキーのリスト。keywindow モジュール参照）
+    key_windows: dict[str, list[str]] = field(default_factory=dict)
 
     def mapping(self) -> KeyMapping:
         """現在有効なマッピングを返す。"""
@@ -67,8 +70,25 @@ class AppConfig:
         return names
 
     def save(self) -> None:
-        with open(config_path(), "w", encoding="utf-8") as f:
+        """設定を保存する。直前の内容を .bak に残し、書き込みはアトミックに行う。
+
+        設定にはカスタムのキー割り当て・プレイリスト・練習メモが入る。保存中に落ちたり、
+        既定値で上書きしてしまったりすると、ユーザーの手作業が黙って消える。
+        .bak があれば手で戻せる。
+        """
+        path = config_path()
+        if os.path.exists(path):
+            try:
+                shutil.copy2(path, path + ".bak")
+            except OSError:
+                pass  # バックアップに失敗しても保存自体は続ける
+
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
             json.dump(asdict(self), f, ensure_ascii=False, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)  # 同一ボリューム上での置換はアトミック
 
     @classmethod
     def load(cls) -> "AppConfig":

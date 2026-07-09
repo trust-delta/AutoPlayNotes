@@ -73,6 +73,45 @@ class SuggestWindowTest(unittest.TestCase):
         self.assertEqual(difficulty.suggest_window(score, _diatonic()), frozenset())
 
 
+class PersistenceTest(unittest.TestCase):
+    """演奏範囲は曲ごとに保存する。練習メモと同じ曲キーに相乗りする。"""
+
+    def setUp(self) -> None:
+        from autoplaynotes.config import AppConfig
+
+        self.config = AppConfig()
+
+    def test_unknown_song_has_no_window(self) -> None:
+        from autoplaynotes import keywindow
+
+        self.assertIsNone(keywindow.load_window(self.config, _twinkle(), _diatonic()))
+
+    def test_round_trip(self) -> None:
+        from autoplaynotes import keywindow
+
+        window = difficulty.suggest_window(_twinkle(), _diatonic(), 1)
+        keywindow.save_window(self.config, _twinkle(), window)
+        self.assertEqual(keywindow.load_window(self.config, _twinkle(), _diatonic()), window)
+
+    def test_window_from_another_mapping_is_discarded(self) -> None:
+        """キー割り当てを変えたら、保存されたキー名は今の鍵盤に無い。勝手に狭めない。"""
+        from autoplaynotes import keywindow
+
+        keywindow.save_window(self.config, _twinkle(), frozenset({"存在しないキー"}))
+        self.assertIsNone(keywindow.load_window(self.config, _twinkle(), _diatonic()))
+
+    def test_describe_window(self) -> None:
+        from autoplaynotes import keywindow
+
+        mapping = _diatonic()
+        window = difficulty.keys_between(mapping, name_to_midi("C4"), name_to_midi("A4"))
+        self.assertEqual(keywindow.describe_window(mapping, window), "C4〜A4（6鍵）")
+        self.assertEqual(
+            keywindow.describe_window(mapping, difficulty.full_window(mapping)), "原曲どおり"
+        )
+        self.assertEqual(keywindow.describe_window(mapping, frozenset()), "なし")
+
+
 class KeyWindowDialogTest(unittest.TestCase):
     root: "object"
 

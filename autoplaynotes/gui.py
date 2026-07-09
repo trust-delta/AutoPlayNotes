@@ -9,6 +9,7 @@ import time
 import tkinter as tk
 from dataclasses import replace
 from tkinter import filedialog, messagebox
+from typing import Callable
 
 import customtkinter as ctk
 
@@ -23,6 +24,7 @@ from .model import Score
 from .number_parser import parse_numbers
 from .player import PlaybackOptions, Player, preview_lines
 from .playlist import Playlist, PlaylistItem
+from . import difficulty, keywindow  # noqa: F401  (演奏範囲)
 from .practice import PracticeWindow
 from .score_export import score_to_midi_bytes, score_to_musicxml
 from .staff import StaffWindow
@@ -254,6 +256,8 @@ class App:
                       command=self._open_staff).pack(side="left", padx=(0, 6))
         ctk.CTkButton(tools, text="🎮 練習モード", width=110,
                       command=self._open_practice).pack(side="left", padx=(0, 6))
+        ctk.CTkButton(tools, text="🎹 演奏範囲", width=100,
+                      command=lambda: self._choose_key_window()).pack(side="left", padx=(0, 6))
         ctk.CTkButton(tools, text="エクスポート/変換", width=130,
                       command=self._open_export).pack(side="left", padx=(0, 6))
         ctk.CTkButton(tools, text="プレビュー", width=90,
@@ -782,8 +786,60 @@ class App:
         if not score.events:
             messagebox.showwarning("空の楽譜", "練習できる音がありません。")
             return
-        PracticeWindow(self.root, score, self._current_mapping(), audio=self.audio,
-                       config=self.config)
+        mapping = self._current_mapping()
+        window = keywindow.load_window(self.config, score, mapping)
+        if window is None:
+            # この曲は初めて。まず「どこを自分で弾くか」を選んでもらう。
+            self._choose_key_window(
+                score, mapping, then=lambda w: self._start_practice(score, mapping, w)
+            )
+            return
+        self._start_practice(score, mapping, window)
+
+    def _start_practice(self, score: Score, mapping: KeyMapping, window: frozenset[str]) -> None:
+        mine, theirs = difficulty.split(score, mapping, window)
+        played = sum(len(e.midi_notes) for e in mine.events)
+        if played == 0:
+            messagebox.showwarning(
+                "演奏範囲が空です", "その範囲には弾く音がありません。範囲を選び直してください。")
+            return
+        label = keywindow.describe_window(mapping, window)
+        outside = sum(len(e.midi_notes) for e in theirs.events)
+        self._log(f"練習モード: 演奏範囲 {label} / あなたが弾く音 {played}・範囲外 {outside}")
+        PracticeWindow(self.root, mine, mapping, audio=self.audio,
+                       config=self.config, range_label=label)
+
+    def _choose_key_window(
+        self,
+        score: Score | None = None,
+        mapping: KeyMapping | None = None,
+        then: Callable[[frozenset[str]], None] | None = None,
+    ) -> None:
+        """演奏範囲（自分で弾くキー）を選ぶ。曲ごとに保存する。"""
+        if score is None:
+            score = self._build_score()
+            if score is None:
+                return
+        if not score.events:
+            messagebox.showwarning("空の楽譜", "演奏範囲を決める音がありません。")
+            return
+        mapping = mapping or self._current_mapping()
+        chosen = mapping
+
+        def on_apply(window: frozenset[str]) -> None:
+            keywindow.save_window(self.config, score, window)
+            try:
+                self.config.save()
+            except OSError as exc:  # 保存できなくても練習は続けられる
+                self._log(f"演奏範囲の保存に失敗しました: {exc}")
+            self._log(f"演奏範囲: {keywindow.describe_window(chosen, window)}")
+            if then is not None:
+                then(window)
+
+        keywindow.KeyWindowDialog(
+            self.root, score, chosen, on_apply=on_apply,
+            initial=keywindow.load_window(self.config, score, chosen),
+        )
 
     def _open_export(self) -> None:
         score = self._build_score()
