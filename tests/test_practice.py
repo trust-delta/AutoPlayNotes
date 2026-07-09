@@ -190,6 +190,80 @@ class ShortNoteJudgmentTest(_WindowTest):
         self.assertEqual(sum(win._counts.values()), 1)
 
 
+class AccompanimentTest(_WindowTest):
+    """演奏範囲の外の音は、スピーカーで一緒に鳴らせる。ゲームには一切送らない。"""
+
+    def _split(self):
+        from autoplaynotes import difficulty
+        from autoplaynotes.keymap import name_to_midi
+
+        mapping = _mapping()
+        score = _score(
+            NoteEvent(0.0, 1.0, (60, 62), (1.0, 1.0)),   # 'a' はあなた、's' は範囲外
+            NoteEvent(1.0, 1.0, (62,), (1.0,)),
+        )
+        window = difficulty.keys_between(mapping, name_to_midi("C4"), name_to_midi("C4"))
+        mine, theirs = difficulty.split(score, mapping, window)
+        return score, mine, theirs
+
+    def _window_with_accomp(self):
+        _score_all, mine, theirs = self._split()
+        win = practice.PracticeWindow(
+            self.root, mine, _mapping(), accompaniment=theirs,  # type: ignore[arg-type]
+        )
+        self.addCleanup(win.destroy)
+        return win, theirs
+
+    def test_only_your_notes_become_lanes(self) -> None:
+        win, _theirs = self._window_with_accomp()
+        self.assertEqual(win._lanes, ["a"])
+        self.assertEqual(len(win._notes), 1)
+
+    def test_accompaniment_is_detected(self) -> None:
+        win, _theirs = self._window_with_accomp()
+        self.assertTrue(win._has_accomp)
+
+    def test_audio_score_picks_your_part_alone(self) -> None:
+        win, _theirs = self._window_with_accomp()
+        chosen = win._audio_score(notes=True, accomp=False)
+        self.assertIs(chosen, win.score)
+
+    def test_audio_score_picks_the_accompaniment_alone(self) -> None:
+        win, theirs = self._window_with_accomp()
+        chosen = win._audio_score(notes=False, accomp=True)
+        self.assertIs(chosen, win.accompaniment)
+
+    def test_audio_score_merges_both_back_into_the_original(self) -> None:
+        original, _mine, _theirs = self._split()
+        win, _t = self._window_with_accomp()
+        chosen = win._audio_score(notes=True, accomp=True)
+        self.assertEqual(
+            [e.midi_notes for e in chosen.events], [e.midi_notes for e in original.events]
+        )
+
+    def test_merged_score_is_cached(self) -> None:
+        win, _theirs = self._window_with_accomp()
+        first = win._audio_score(notes=True, accomp=True)
+        self.assertIs(win._audio_score(notes=True, accomp=True), first)
+
+    def test_without_accompaniment_nothing_breaks(self) -> None:
+        win = self._window(_score(NoteEvent(0.0, 1.0, (60,), (1.0,))), _mapping())
+        self.assertFalse(win._has_accomp)
+        self.assertIs(win._audio_score(notes=True, accomp=True), win.score)
+
+    def test_silent_accompaniment_counts_as_none(self) -> None:
+        """範囲が全鍵なら、範囲外の譜面は休符だけ。伴奏トグルは無効。"""
+        from autoplaynotes.model import Score as S
+
+        theirs = S(events=[NoteEvent(0.0, 1.0, ())])
+        win = practice.PracticeWindow(
+            self.root, _score(NoteEvent(0.0, 1.0, (60,), (1.0,))), _mapping(),  # type: ignore[arg-type]
+            accompaniment=theirs,
+        )
+        self.addCleanup(win.destroy)
+        self.assertFalse(win._has_accomp)
+
+
 class ResetTest(_WindowTest):
     def test_reset_clears_held_notes(self) -> None:
         win = self._window(_score(NoteEvent(0.0, 2.0, (60,), (2.0,))), _mapping())

@@ -806,8 +806,8 @@ class App:
         label = keywindow.describe_window(mapping, window)
         outside = sum(len(e.midi_notes) for e in theirs.events)
         self._log(f"練習モード: 演奏範囲 {label} / あなたが弾く音 {played}・範囲外 {outside}")
-        PracticeWindow(self.root, mine, mapping, audio=self.audio,
-                       config=self.config, range_label=label)
+        PracticeWindow(self.root, mine, mapping, audio=self.audio, config=self.config,
+                       range_label=label, accompaniment=theirs)
 
     def _choose_key_window(
         self,

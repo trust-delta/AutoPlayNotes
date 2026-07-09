@@ -142,6 +142,41 @@ class PartitionTest(unittest.TestCase):
         self.assertEqual(app.events[0].midi_notes, (62,))
 
 
+class MergeTest(unittest.TestCase):
+    """split() の逆。合わせれば必ず原曲に戻る。伴奏を一緒に鳴らすときに使う。"""
+
+    def test_split_then_merge_restores_the_original(self) -> None:
+        piano = _piano()
+        for hi in ("C4", "E4", "C5"):
+            with self.subTest(hi=hi):
+                window = difficulty.keys_between(piano, name_to_midi("C4"), name_to_midi(hi))
+                mine, theirs = difficulty.split(_chorale(), piano, window)
+                restored = difficulty.merge(mine, theirs)
+                for src, got in zip(_chorale().events, restored.events):
+                    self.assertEqual(got.midi_notes, tuple(sorted(src.midi_notes)))
+
+    def test_merge_keeps_per_note_durations(self) -> None:
+        piano = _piano()
+        score = Score(events=[
+            NoteEvent(0.0, 4.0, (name_to_midi("C3"), name_to_midi("G4")), (4.0, 1.0)),
+        ])
+        window = difficulty.keys_between(piano, name_to_midi("C4"), name_to_midi("C5"))
+        merged = difficulty.merge(*difficulty.split(score, piano, window))
+        self.assertEqual(merged.events[0].midi_notes, (name_to_midi("C3"), name_to_midi("G4")))
+        self.assertEqual(merged.events[0].durations, (4.0, 1.0))
+        self.assertEqual(merged.events[0].duration_beat, 4.0)
+
+    def test_merge_keeps_rests(self) -> None:
+        piano = _piano()
+        window = difficulty.full_window(piano)
+        merged = difficulty.merge(*difficulty.split(_chorale(), piano, window))
+        self.assertTrue(merged.events[2].is_rest)
+
+    def test_merge_rejects_unrelated_scores(self) -> None:
+        with self.assertRaises(ValueError):
+            difficulty.merge(_chorale(), Score(events=[]))
+
+
 class VisualisationDataTest(unittest.TestCase):
     """窓を選ぶ前に見せる材料。見せずに選ばせてはいけない。"""
 

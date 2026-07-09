@@ -22,7 +22,7 @@ from dataclasses import dataclass
 
 import customtkinter as ctk
 
-from . import practice_notes, theme
+from . import difficulty, practice_notes, theme
 from .keymap import KeyMapping
 from .model import Score
 from .staff import StaffCanvas
@@ -98,10 +98,18 @@ class _Note:
 
 class PracticeWindow(ctk.CTkToplevel):
     def __init__(self, parent: tk.Widget, score: Score, mapping: KeyMapping, audio=None,
-                 config=None, range_label: str = "") -> None:
+                 config=None, range_label: str = "", accompaniment: Score | None = None) -> None:
         super().__init__(parent)
         self.title(f"練習モード — {range_label}" if range_label else "練習モード")
         self._range_label = range_label
+        # 演奏範囲の外の音。あなたは弾かないが、スピーカーで一緒に鳴らせる。
+        # ゲームへは一切送らないので、これはホワイト側の機能。
+        self.accompaniment = accompaniment
+        self._has_accomp = bool(
+            accompaniment is not None
+            and any(not e.is_rest for e in accompaniment.events)
+        )
+        self._merged: Score | None = None
         self.resizable(False, False)
         theme.apply_titlebar(self)
         self.score = score
@@ -145,6 +153,7 @@ class PracticeWindow(ctk.CTkToplevel):
         self._audio_on = tk.BooleanVar(value=(audio is not None and audio.is_available()))
         # メトロノームと A-B ループ（リズムモード用）
         self._metro = tk.BooleanVar(value=False)
+        self._accomp_on = tk.BooleanVar(value=False)  # 実値は _build_ui で決める
         self._loop_on = tk.BooleanVar(value=False)
         self._loop_a: float | None = None
         self._loop_b: float | None = None
@@ -275,6 +284,13 @@ class PracticeWindow(ctk.CTkToplevel):
         speed_menu.pack(side="left")
         ctk.CTkCheckBox(controls, text="音を鳴らす", variable=self._audio_on,
                         onvalue=True, offvalue=False).pack(side="left", padx=12)
+        aud_available = self.audio is not None and self.audio.is_available()
+        self._accomp_on.set(self._has_accomp and aud_available)
+        ctk.CTkCheckBox(
+            controls, text="🎹 伴奏（範囲外の音）", variable=self._accomp_on,
+            onvalue=True, offvalue=False,
+            state=("normal" if (self._has_accomp and aud_available) else "disabled"),
+        ).pack(side="left")
 
         # 練習補助（リズムモード）: メトロノーム + A-B ループ
         aids = ctk.CTkFrame(self, fg_color="transparent")
@@ -563,16 +579,30 @@ class PracticeWindow(ctk.CTkToplevel):
         self._tick()
 
     # --- メトロノーム / A-B ループ --------------------------------------------
+    def _audio_score(self, notes: bool, accomp: bool) -> Score:
+        """鳴らす譜面を選ぶ。あなたの担当と伴奏（範囲外）の組み合わせ。"""
+        if notes and accomp and self.accompaniment is not None:
+            if self._merged is None:
+                self._merged = difficulty.merge(self.score, self.accompaniment)
+            return self._merged
+        if accomp and self.accompaniment is not None:
+            return self.accompaniment
+        return self.score
+
     def _rhythm_audio(self, start_sec: float, end_sec: float | None = None) -> None:
-        """リズムモードの音（メロディ＋メトロノーム）を鳴らす。両方オフなら無音。"""
+        """リズムモードの音（あなたの担当＋伴奏＋メトロノーム）。すべてオフなら無音。"""
         if self.audio is None or not self.audio.is_available():
             return
         notes = self._audio_on.get()
+        accomp = self._accomp_on.get() and self._has_accomp
         metro = self._metro.get()
-        if not (notes or metro):
+        if not (notes or accomp or metro):
             return
-        self.audio.play_score(self.score, self._eff_bpm(), start_sec=start_sec,
-                              end_sec=end_sec, include_notes=notes, metronome=metro)
+        self.audio.play_score(
+            self._audio_score(notes, accomp), self._eff_bpm(),
+            start_sec=start_sec, end_sec=end_sec,
+            include_notes=notes or accomp, metronome=metro,
+        )
 
     def _loop_active(self) -> bool:
         return (self._loop_on.get() and self._loop_a is not None

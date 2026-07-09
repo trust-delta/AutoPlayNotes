@@ -98,6 +98,33 @@ def apply(score: Score, mapping: KeyMapping, yours: KeySet) -> Score:
     return split(score, mapping, yours)[0]
 
 
+def merge(mine: Score, theirs: Score) -> Score:
+    """`split()` の逆。合わせると必ず原曲に戻る。
+
+    練習中に窓の外（アプリの担当）もスピーカーで鳴らすとき、両方を 1 つの Score にする。
+    `split()` が返した組であることが前提で、イベントは 1:1 に対応している。
+    """
+    if len(mine.events) != len(theirs.events):
+        raise ValueError("split() が返した組でなければ結合できません")
+
+    events: list[NoteEvent] = []
+    for a, b in zip(mine.events, theirs.events):
+        notes = a.midi_notes + b.midi_notes
+        if not notes:
+            events.append(replace(a, midi_notes=(), durations=()))
+            continue
+        durations = a.note_durations() + b.note_durations()
+        order = sorted(range(len(notes)), key=lambda i: notes[i])
+        picked = tuple(durations[i] for i in order)
+        events.append(replace(
+            a,
+            midi_notes=tuple(notes[i] for i in order),
+            durations=picked,
+            duration_beat=max(picked),
+        ))
+    return replace(mine, events=events)
+
+
 # --- 窓を選ぶための材料（可視化が使う） ---------------------------------------
 def keys_at_once(
     event: NoteEvent, mapping: KeyMapping, within: KeySet | None = None
