@@ -33,3 +33,7 @@ pitch-addon/*.zip
 Thumbs.db
 .idea/
 .vscode/
+
+# AI エージェント（docs/aims/_guide/frame.md を指すだけの各自のローカルファイル）
+CLAUDE.local.md
+CLAUDE.md
