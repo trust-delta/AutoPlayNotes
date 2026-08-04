@@ -34,6 +34,7 @@ Thumbs.db
 .idea/
 .vscode/
 
-# AI エージェント（docs/aims/_guide/frame.md を指すだけの各自のローカルファイル）
+# AI エージェント（このマシンでだけ真なことを書く各自のローカルファイル）
+# ⚠ CLAUDE.md は 2026-08-04 に追跡へ入れた —— aim の door を指す配線が
+#    untracked な CLAUDE.local.md にしか無く、git から見えなかったため
 CLAUDE.local.md
-CLAUDE.md
