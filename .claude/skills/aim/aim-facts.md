@@ -25,7 +25,7 @@ fence は **records が空でも必ず出る**。空の block は「**該当な�
 | `bearing-working-delta v1` | `slug \| uncommitted \| uncommitted_anchor_change \| untracked` | working tree にある未 commit / 未 track の node。presence のみで順序を含まない |
 | `bearing-unpushed v1` | `slug \| ahead_commits \| latest_sha \| latest_date` | commit 済だが remote に届いていない aim commit |
 | `bearing-checkpoint-stale v1` | `slug \| checkpoint_sha \| commits_since` | `last-verified` を持つ node の checkpoint から repo がどれだけ動いたか |
-| `bearing-awaiting-observation v1` | `slug \| done_marks \| state` | エージェントが尽くし（mark が在り、その全てが `[done]`）、人間がまだ `state: done` を宣言していない node |
+| `bearing-awaiting-declaration v1` | `slug \| done_marks \| observations \| state` | エージェントが尽くし（mark が在り、その全てが `[done]`）、人間がまだ `state: done` を宣言していない node。`observations` は その node の `# OBSERVATION` の票数（0 なら `-`） |
 
 ⚠ **前の 5 枚は git の事実だが、6 枚目だけは corpus の事実である。** git が読めなくても出る。
 
@@ -45,7 +45,9 @@ fence は **records が空でも必ず出る**。空の block は「**該当な�
 
 **unpushed は「既に済んだ作業」の frontier。** baton は forward に選択されるため、道中どう aim を触ったかを構造的に過少報告する。ここに挙がった slug は **re-read すること** —— aim を読み直して得られるのは*到達状態*であって*変化*ではないが、この差分だけが変化を運ぶ。
 
-**awaiting-observation は「終わった aim」の一覧ではない。** ここに挙がるのは *エージェントの側が*尽きた node であり、⚠ **満足したかどうかを述べられるのは人間だけである** —— この fence はそれを一切先取りしない。∴ **surface はせよ。だが「これは done にしてよい」と提案するな。** 逆に、⚠ **ここが空であることは「番が渡っていない」を意味するのであって、「やることが無い」ではない。** ⚠ **`open-todo` と `escalation` の両方と併せて読むこと: 3 つとも 0 で初めて、エージェントにも人間にも渡っていない ＝ node が純 IS のままか、すべて解決済みである。** ⚠ **2 つだけで読んではならない** —— `# ESCALATION` を持つ node は、`open-todo` も awaiting も 0 のまま**人間で止まっている**。
+**awaiting-declaration は「終わった aim」の一覧ではない。** ここに挙がるのは *エージェントの側が*尽きた node であり、⚠ **満足したかどうかを述べられるのは人間だけである** —— この fence はそれを一切先取りしない。∴ **surface はせよ。だが「これは done にしてよい」と提案するな。** 逆に、⚠ **ここが空であることは「番が渡っていない」を意味するのであって、「やることが無い」ではない。** ⚠ **`open-todo` と `escalation` の両方と併せて読むこと: 3 つとも 0 で初めて、エージェントにも人間にも渡っていない ＝ node が純 IS のままか、すべて解決済みである。** ⚠ **2 つだけで読んではならない** —— `# ESCALATION` を持つ node は、`open-todo` も宣言待ちも 0 のまま**人間で止まっている**。
+
+⚠ **そして `observations` 列は、この fence が渡す*内容*である。** 番を渡すだけの fence は「あなたが見るべきものが在る」としか言えない ∴ **列が `-` の行は、人間に番だけを渡して材料を渡していない** —— それは corpus の欠陥であって、人間が読み落としているのではない。
 
 **checkpoint-stale は verdict ではない。** footprint はまだ node 自身の code へ絞られておらず、repo 全体が動いただけかもしれない。挙がった slug は「**再検証する価値がありうる候補**」として扱う。判断不要な絞り込みは fan-out してよいが、**aim が code から剥離したという宣言は人間の act** である（`state: done` と同じ層）。
 
@@ -82,6 +84,23 @@ fence は **records が空でも必ず出る**。空の block は「**該当な�
 
 ---
 
+## observation 数
+
+出力は `observation: N` を含む。N ＝ **`# OBSERVATION` に中身を持つ aim node の数**。
+
+- **node 単位で 1 回**数える（1 つの node が票を何枚並べても 1）。**票の枚数を運ぶのは fence の `observations` 列だけである。**
+- **`state: dead` の node は除く。** 除外はこれ 1 つだけであり、`open-todo` / `escalation` と同じ規則である。
+- unit の**全 repo を横断**して合算する。
+- ⚠ **見出しだけ在って中身が無い節は、この数に入らない**（`escalation` と同じ法）。⚠ **かといって黙って落としもしない** —— 別の行で名指される。
+
+⚠ **この数は「番」を数えていない。** `open-todo` は**エージェントの番**、`escalation` は**人間の番（進行が止まっている）**、宣言待ちは**人間の番（完結が止まっている）** —— どれも「誰かが動くべき」を述べる。⚠ **対して `observation` が数えるのは*材料*である** —— 番を渡された人間に、**何を見ればよいかが書かれているか。** ∴ ⚠ **「3 つとも 0 なら誰にも番が渡っていない」の 3 つに、この数を混ぜてはならない。**
+
+🔴 **∴ 読み方は「宣言待ちに並ぶ node が、票を持っているか」である。** 票を持たない宣言待ち node は、⚠ **人間に「あなたの番だ」と告げながら、何を見ればよいかを 1 文字も渡していない。** fence の `observations` 列が `-` になるのがその形である。
+
+これも **fact であり、fact でしかない。surface せよ。triage も ranking も、どれから書くべきかの提案もするな。**
+
+---
+
 ## PROCESS の機械 parse 形
 
 `# PROCESS` は body で**唯一機械に読まれる** section であり、読まれる形は厳密に決まっている。数えられたいなら、この形で書くこと。
@@ -105,11 +124,11 @@ fence は **records が空でも必ず出る**。空の block は「**該当な�
 | 値 | 意味 |
 | :-- | :-- |
 | `some-todo` | `[todo]` が 1 つ以上ある ＝ **エージェントに**未実装の手段が残っている |
-| `all-done` | mark があり、その全てが `[done]` ＝ **エージェントが尽くした ∴ 人間の観測待ち** |
+| `all-done` | mark があり、その全てが `[done]` ＝ **エージェントが尽くした ∴ 人間の宣言待ち** |
 | `no-process` | `# PROCESS` 見出しが無い（純 IS の node。正常な状態） |
 | `unknown` | 見出しはあるが、parse できる mark が 1 つも無い |
 
-⚠ **`all-done` と `no-process` を「todo が 0 件」として同じに読んではならない。** 前者は **エージェントの側が終わっており、残っているのは人間の観測と `state:` の宣言だけ**という状態である。後者はまだ何も約束していない。⚠ **`all-done` かつ `state: open` の node は、この体制において「人間の番」を意味する** —— 数が 0 だからといって、その aim が閉じたわけではない。
+⚠ **`all-done` と `no-process` を「todo が 0 件」として同じに読んではならない。** 前者は **エージェントの側が終わっており、残っているのは人間の観測と `state:` の宣言だけ**という状態である（⚠ **ただし `# OBSERVATION` の票が無ければ、エージェントは尽きていない** —— [`aim-authoring.md`](aim-authoring.md) の「完結の形」）。後者はまだ何も約束していない。⚠ **`all-done` かつ `state: open` の node は、この体制において「人間の番」を意味する** —— 数が 0 だからといって、その aim が閉じたわけではない。
 
 ⚠ **`unknown` を `all-done` に倒してはならない。** これは soft な散文 parse であって、drift のような hard な git 計算ではない。∴ 読めなかったときは**読めなかったと述べる** —— 捏造した `done` より正直な `unknown` が正しい。この非対称が、この層に与えられている権限の全てである。
 
@@ -117,7 +136,7 @@ fence は **records が空でも必ず出る**。空の block は「**該当な�
 
 ## 呼び出し
 
-composer は hook から**引数無しで**呼ばれる。⚠ **下の行は形の説明であって、写して打てる 1 行ではない** —— この canon は plugin にも workspace にも同じ text で運ばれる ∴ どちらの置き場も名指せない。frame は常に出し、unit は cwd から解決し、fence は必ず 5 枚出す。**flag は持たない。**
+composer は hook から**引数無しで**呼ばれる。⚠ **下の行は形の説明であって、写して打てる 1 行ではない** —— この canon は plugin にも workspace にも同じ text で運ばれる ∴ どちらの置き場も名指せない。frame は常に出し、unit は cwd から解決し、fence は必ず 6 枚出す。**flag は持たない。**
 
 ```
 node <plugin root>/bin/aim-facts.mjs
