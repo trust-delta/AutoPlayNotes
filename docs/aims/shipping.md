@@ -21,9 +21,12 @@ state: open
 - [done] アドオンのドロップイン契約と同梱ビルドのハーネス（埋め込み Python・`--no-deps` lock）
 - [done] 採譜アドオンの実成果物ビルドと統合 zip（OMR ＋ 音源採譜・E2E 検証済み）
 - [done] `THIRD-PARTY-NOTICES.md` と `licenses/` の生成
-- [todo] 名前の決定
-- [todo] バイナリの実配布
 
 # ESCALATION
 - **名前の決定は operator の act。** 改名するならサムネ・GitHub・exe の全てに波及するので、**配布を始める前が最も安い**。
 - **実配布はアカウント操作を伴う**ため operator の act。
+
+# OBSERVATION
+- 開発環境の無い素の Windows で、配布 zip を解凍して置くだけで本体が起動し、採譜アドオンが呼べるか
+- ソースを clone した人が README の手順だけでビルドでき、**無償の経路が実際に通っている**か
+- 配布を始めたあと、購入者が実行ファイルと採譜アドオンを入手して使えたか

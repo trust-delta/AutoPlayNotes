@@ -22,5 +22,10 @@ state: open
 - [done] 複声部由来の重なる譜面で変換がずれる欠陥の修正（`model.sequential_durations()`）
 - [子] 譜面が無い素材（画像 / 音源 / 映像）からの採譜 → [[transcribe-addon]]
 
+# OBSERVATION
+- 手持ちの素材（数字譜・テキスト CDE・MIDI・MusicXML・数字譜スクショ・PDF・楽譜画像）を実際に 1 本ずつ取り込み、どれも練習に使える譜面になったか
+- MIDI も譜面も出回らないロングテール曲を 1 曲、**トレース入力だけで最後まで譜面化しきれた**か（＝ テールの主戦力という読みが、実際の作業量で成り立つか）
+- 他ソフト（PlayScore / ScanScore / MuseScore など）が吐いた MusicXML / MIDI を、そのまま取り込めたか
+
 # DAG
 関連: [[ear-verification]] — 入口を広げるほど、採譜の誤りを検証できないユーザーが増える
