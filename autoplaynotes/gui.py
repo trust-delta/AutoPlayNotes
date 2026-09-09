@@ -13,7 +13,7 @@ from typing import Callable
 
 import customtkinter as ctk
 
-from . import midi_parser, musicxml_parser, ocr, omr, pdf, pitch, theme, trace
+from . import midi_parser, musicxml_parser, ocr, omr, onboarding, pdf, pitch, theme, trace
 from .resources import icon_path
 from .audio import AudioPlayer
 from .config import AppConfig
@@ -26,6 +26,7 @@ from .player import PlaybackOptions, Player, preview_lines
 from .playlist import Playlist, PlaylistItem
 from . import difficulty, keywindow  # noqa: F401  (演奏範囲)
 from .practice import PracticeWindow
+from .practice_notes import song_key
 from .score_export import score_to_midi_bytes, score_to_musicxml
 from .staff import StaffWindow
 from .text_parser import parse_text
@@ -70,6 +71,16 @@ D D E D C:4
 _SOURCE_LABELS = {"text": "テキスト記譜", "number": "数字譜", "midi": "MIDI / MusicXML"}
 _LABEL_SOURCES = {v: k for k, v in _SOURCE_LABELS.items()}
 
+# 演奏範囲と「範囲の外の扱い」の直積。README のモード表と同じ内容（→ practice-onboarding）
+_MODE_TABLE = (
+    ("あなたが弾く範囲", "範囲の外をアプリが", "モード", "ゲームへキー"),
+    ("なし", "ゲームへ送る", "自動演奏", "⚠️ 送る"),
+    ("一部", "ゲームへ送る", "補助演奏", "⚠️ 送る"),
+    ("なし", "スピーカーで鳴らす", "試聴（譜面の確認）", "送らない"),
+    ("一部", "スピーカーで鳴らす", "練習＋伴奏", "送らない"),
+    ("一部", "何もしない", "練習", "送らない"),
+)
+
 
 class App:
     def __init__(self, root: ctk.CTk, config: AppConfig | None = None) -> None:
@@ -85,6 +96,12 @@ class App:
         self.hotkeys = HotkeyManager()
         self.audio = AudioPlayer()
         self._staff_window: StaffWindow | None = None
+
+        # 練習への誘い（→ onboarding）。誘うのは「いま鳴らした曲」に対してなので、
+        # 補助演奏で分割する前の楽譜を覚えておく。曲ごとに 1 セッション 1 回だけ。
+        self._last_played: Score | None = None
+        self._last_assist = False
+        self._invited: set[str] = set()
 
         # プレイリスト状態
         self.playlist = Playlist()
@@ -109,6 +126,7 @@ class App:
         self._loop_var = tk.BooleanVar(value=self.config.loop)
         self._assist = tk.BooleanVar(value=self.config.assist_play)
         self._tempo_var = tk.StringVar(value=f"{self.config.tempo_bpm:g}")
+        self._invite_var = tk.BooleanVar(value=self.config.invite_practice)
 
         root.title("AutoPlayNotes - 楽譜オートプレイヤー")
         root.geometry("920x900")
@@ -179,18 +197,18 @@ class App:
                      text_color=theme.pair("subtle")).pack(side="right", padx=12)
 
         # タブ
-        tabs = ctk.CTkTabview(self.root, anchor="w", fg_color="transparent")
+        tabs = ctk.CTkTabview(self.root, anchor="w", fg_color="transparent",
+                              command=self._on_tab_changed)
         tabs.pack(fill="both", expand=True, padx=12, pady=(0, 4))
         self._tabs = tabs
-        tab_play = tabs.add("🎹 演奏")
-        tab_playlist = tabs.add("🎵 プレイリスト")
-        tab_settings = tabs.add("⚙ 設定")
-        tab_log = tabs.add("📄 ログ")
+        frames = {name: tabs.add(name) for name in onboarding.TAB_ORDER}
 
-        self._build_play_tab(tab_play)
-        self._build_playlist_tab(tab_playlist)
-        self._build_settings_tab(tab_settings)
-        self._build_log_tab(tab_log)
+        self._build_practice_tab(frames[onboarding.TAB_PRACTICE])
+        self._build_play_tab(frames[onboarding.TAB_PLAY])
+        self._build_playlist_tab(frames[onboarding.TAB_PLAYLIST])
+        self._build_settings_tab(frames[onboarding.TAB_SETTINGS])
+        self._build_log_tab(frames[onboarding.TAB_LOG])
+        tabs.set(onboarding.startup_tab(self.config.last_tab))
 
         self._update_source()
 
@@ -201,6 +219,74 @@ class App:
                      font=ctk.CTkFont(size=12, weight="bold"),
                      text_color=theme.pair("subtle")).pack(fill="x", padx=14, pady=(8, 0))
         return box
+
+    def _on_tab_changed(self) -> None:
+        """開いていたタブを覚える。次の起動はここから始まる（→ onboarding）。"""
+        self.config.last_tab = self._tabs.get()
+
+    def _build_practice_tab(self, parent: ctk.CTkFrame) -> None:
+        """『自分で弾く』側の入口。
+
+        自動演奏で来た人に足りないのは肩代わりではなく導線である ∴ このタブは
+        機能を増やさず、既に在る「演奏範囲 → 練習モード」への入口を先頭へ出すだけ。
+        ⚠️ 自動演奏（🎹 演奏）は隣に在り、消しも隠しもしない。
+        """
+        start = self._section(parent, "この曲を自分で弾く")
+        start.pack(fill="x", pady=(4, 8))
+        ctk.CTkLabel(
+            start, justify="left", wraplength=760, anchor="w",
+            text=("弾くのは「演奏範囲」——鍵盤のうち、自分の指で担当する範囲だけです。"
+                  "範囲の外はアプリが受け持ちます。ドレミファソラシドの 8 鍵から始められます。"),
+        ).pack(fill="x", padx=14, pady=(6, 2))
+        ctk.CTkLabel(
+            start, justify="left", anchor="w", text_color=theme.pair("subtle"),
+            text="楽譜は『🎹 演奏』タブで開いているものがそのまま使われます。",
+        ).pack(fill="x", padx=14, pady=(0, 6))
+
+        buttons = ctk.CTkFrame(start, fg_color="transparent")
+        buttons.pack(fill="x", padx=12, pady=(0, 12))
+        ctk.CTkButton(buttons, text="🎹 演奏範囲を選ぶ", width=170, height=40,
+                      command=lambda: self._choose_key_window()).pack(side="left", padx=(0, 8))
+        ctk.CTkButton(
+            buttons, text="🎮 練習モードを始める", width=200, height=40,
+            font=ctk.CTkFont(size=14, weight="bold"),
+            command=self._open_practice, **theme.BTN_ACCENT,
+        ).pack(side="left", padx=(0, 8))
+        audio_state = "normal" if self.audio.is_available() else "disabled"
+        ctk.CTkButton(buttons, text="🔊 音で試聴", width=110, height=40,
+                      command=self._audio_preview, state=audio_state).pack(side="left")
+
+        modes = self._section(parent, "5 つのモード（演奏範囲 × 範囲の外の扱い）")
+        modes.pack(fill="both", expand=True, pady=(0, 8))
+        table = ctk.CTkFrame(modes, fg_color="transparent")
+        table.pack(fill="x", padx=14, pady=(6, 10))
+        for r, row in enumerate(_MODE_TABLE):
+            for c, cell in enumerate(row):
+                head = r == 0
+                extra = {"text_color": theme.pair("subtle")} if head else {}
+                ctk.CTkLabel(
+                    table, text=cell, anchor="w",
+                    font=ctk.CTkFont(size=12, weight="bold" if head else "normal"),
+                    **extra,
+                ).grid(row=r, column=c, sticky="w", padx=(0, 20), pady=1)
+
+        ctk.CTkCheckBox(modes, text="自動演奏が終わったら、練習に誘う",
+                        variable=self._invite_var, onvalue=True, offvalue=False,
+                        command=self._on_invite_toggle).pack(anchor="w", padx=14, pady=(0, 10))
+
+        ctk.CTkLabel(
+            parent, justify="left", wraplength=760, anchor="w",
+            text_color=theme.pair("subtle"),
+            text=("弾ける気がしない日は、『🎹 演奏』タブの自動演奏のままで構いません"
+                  "（⚠️ 自動演奏と補助演奏はゲームへキーを送ります・自己責任）。"),
+        ).pack(anchor="w", padx=6, pady=(0, 4))
+
+    def _on_invite_toggle(self) -> None:
+        self.config.invite_practice = self._invite_var.get()
+        try:
+            self.config.save()
+        except Exception:
+            pass
 
     def _build_play_tab(self, parent: ctk.CTkFrame) -> None:
         # 楽譜ソースと入力
@@ -576,6 +662,10 @@ class App:
 
     def _begin(self, score: Score, options: PlaybackOptions) -> bool:
         """検証してプレイヤーを起動する共通処理。成功なら True。"""
+        # 誘いは「いま鳴らした曲」に対して出す ∴ 補助演奏で範囲外だけに切り分ける前の
+        # 楽譜と、そのときの補助演奏の有無をここで控える（演奏中に UI が変わっても動かない）。
+        self._last_played = score
+        self._last_assist = self._assist.get()
         mapping = self._current_mapping()
         try:
             self.sender.validate(set(mapping.note_to_key.values()))
@@ -820,8 +910,10 @@ class App:
         window.protocol("WM_DELETE_WINDOW", lambda: self._close_staff(window))
         self._staff_window = window
 
-    def _open_practice(self) -> None:
-        score = self._build_score()
+    def _open_practice(self, score: Score | None = None) -> None:
+        """練習モードを開く。`score` 省略時はいま編集中の楽譜を使う。"""
+        if score is None:
+            score = self._build_score()
         if score is None:
             return
         if not score.events:
@@ -1400,6 +1492,35 @@ class App:
             return
         if self._playlist_active:
             self._after_song()
+            return
+        self._maybe_invite_to_practice()
+
+    def _maybe_invite_to_practice(self) -> None:
+        """自動演奏が最後まで鳴りきったときだけ、練習へ誘う（→ onboarding）。"""
+        score = self._last_played
+        if score is None:
+            return
+        key = song_key(score.title, len(score.events))
+        if not onboarding.should_invite(
+            stopped=False,
+            playlist_active=self._playlist_active,
+            assist=self._last_assist,
+            enabled=self.config.invite_practice,
+            note_count=onboarding.playable_note_count(score, self._current_mapping()),
+            already_invited=key in self._invited,
+        ):
+            return
+        self._invited.add(key)
+        PracticeInviteDialog(
+            self.root, score,
+            on_accept=lambda: self._open_practice(score),
+            on_mute=self._mute_invite,
+        )
+
+    def _mute_invite(self) -> None:
+        self._invite_var.set(False)
+        self._on_invite_toggle()
+        self._log("練習への誘いは今後表示しません（『🎮 練習』タブで戻せます）。")
 
     def _progress_threadsafe(self, beat: float, total_beats: float) -> None:
         self.root.after(0, lambda: self._update_cursor(beat))
@@ -1884,6 +2005,71 @@ class ExportDialog(ctk.CTkToplevel):
             return
         self._on_reflect(self._text.get("1.0", "end"), "number" if fmt == "number" else "text")
         self.destroy()
+
+
+class PracticeInviteDialog(ctk.CTkToplevel):
+    """自動演奏が終わったあと、練習へ誘うダイアログ（→ `onboarding`）。
+
+    ⚠️ 説教しないこと。妥協を否定せず、隣に道が続いていることを見せるだけである
+    ∴ 断る側を既定の位置（左・Esc・×）に置き、黙らせる手段を同じ画面に置く。
+    """
+
+    def __init__(self, parent: tk.Misc, score: Score,
+                 on_accept: Callable[[], None], on_mute: Callable[[], None]) -> None:
+        super().__init__(parent)
+        self.title(onboarding.INVITE_TITLE)
+        self.geometry("560x290")
+        self.resizable(False, False)
+        theme.apply_titlebar(self)
+        self._on_accept = on_accept
+        self._on_mute = on_mute
+        self._mute = tk.BooleanVar(value=False)
+
+        ctk.CTkLabel(self, text=onboarding.INVITE_TITLE,
+                     font=ctk.CTkFont(size=18, weight="bold")).pack(
+            anchor="w", padx=24, pady=(20, 2))
+        ctk.CTkLabel(self, text=onboarding.invite_lead(score.title),
+                     text_color=theme.pair("subtle"), anchor="w").pack(
+            fill="x", padx=24, pady=(0, 8))
+        ctk.CTkLabel(self, text=onboarding.invite_body(score.title, len(score.events)),
+                     wraplength=500, justify="left", anchor="w").pack(
+            fill="x", padx=24)
+        ctk.CTkLabel(self, text=onboarding.INVITE_FOOTER, wraplength=500, justify="left",
+                     anchor="w", text_color=theme.pair("subtle")).pack(
+            fill="x", padx=24, pady=(8, 0))
+
+        ctk.CTkCheckBox(self, text="今後は表示しない", variable=self._mute,
+                        onvalue=True, offvalue=False).pack(anchor="w", padx=24, pady=(14, 0))
+
+        row = ctk.CTkFrame(self, fg_color="transparent")
+        row.pack(fill="x", padx=24, pady=(12, 20))
+        ctk.CTkButton(row, text="今はしない", width=120, height=40,
+                      command=self._close).pack(side="left")
+        ctk.CTkButton(row, text="🎮 弾いてみる", height=40,
+                      font=ctk.CTkFont(size=14, weight="bold"),
+                      command=self._accept, **theme.BTN_ACCENT).pack(
+            side="right", fill="x", expand=True, padx=(12, 0))
+
+        self.protocol("WM_DELETE_WINDOW", self._close)
+        self.bind("<Escape>", lambda e: self._close())
+        self.transient(parent)
+        self.after(150, self._safe_grab)
+
+    def _safe_grab(self) -> None:
+        try:
+            self.grab_set()
+        except tk.TclError:
+            pass
+
+    def _close(self) -> None:
+        if self._mute.get():
+            self._on_mute()
+        self.destroy()
+
+    def _accept(self) -> None:
+        # 先に閉じる。練習ウィンドウがこのダイアログの下に隠れないようにするため。
+        self._close()
+        self._on_accept()
 
 
 class WelcomeDialog(ctk.CTkToplevel):

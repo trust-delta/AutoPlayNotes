@@ -45,6 +45,10 @@ class AppConfig:
     assist_play: bool = False
     # 初回起動時のみようこそ画面を表示する
     first_run: bool = True
+    # 前回開いていたタブ（起動時に開き直す。空 / 未知なら練習タブ）
+    last_tab: str = ""
+    # 自動演奏が終わったときに「この曲、弾いてみますか？」を出すか
+    invite_practice: bool = True
     # ユーザー定義マッピング（プリセットを上書き / 追加）
     custom_mappings: dict[str, dict[str, Any]] = field(default_factory=dict)
     # プレイリスト（PlaylistItem.to_dict のリスト）
