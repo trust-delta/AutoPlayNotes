@@ -13,6 +13,8 @@ state: open
 - **容量は弱点ではなく付加価値**として提示する。DL 468MB / 展開 1.26GB は「深層学習モデルを丸ごとローカルに同梱している」ということ、すなわち**クラウド送信なし・サブスクなし・オフライン動作・曲数無制限**である。
 - ライセンス表示は `tools/gen_third_party_notices.py` が `THIRD-PARTY-NOTICES.md` と `licenses/` を生成し、配布 zip にも同梱する（oemer は MIT、basic-pitch は Apache-2.0）。
 
+**名前は `AutoPlayNotes` のまま変えない**（2026-09-09、operator の決定）。⚠ **自動演奏を想起させることは負債ではなく釣り針である** —— 規約グレーの自動演奏を探して辿り着いた人に、練習という白い道を見せるのがこの product の賭けであり（→ [[practice-onboarding]]）、名前はその入口の側に属する。∴ サムネ・GitHub・exe への波及も、配布前に急いで決める理由も無くなった。
+
 **価格・販売チャネル・競合の分析は非公開ドキュメントの管轄であり、ここには書かない。**
 
 # PROCESS
@@ -23,7 +25,6 @@ state: open
 - [done] `THIRD-PARTY-NOTICES.md` と `licenses/` の生成
 
 # ESCALATION
-- **名前の決定は operator の act。** 改名するならサムネ・GitHub・exe の全てに波及するので、**配布を始める前が最も安い**。
 - **実配布はアカウント操作を伴う**ため operator の act。
 
 # OBSERVATION
